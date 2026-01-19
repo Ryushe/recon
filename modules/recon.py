@@ -10,6 +10,7 @@ from core.project import (
     merge_into_canonical,
     write_lines,
 )
+from core.logger import log_info, log_ok, log_warn, time_block
 
 module_name = "Recon"
 module_key = "1"
@@ -39,7 +40,7 @@ def register_args(parser):
 
 def run_tui(stdscr, config):
     stdscr.addstr(2, 2, "Use CLI for recon execution:")
-    stdscr.addstr(4, 2, "python main.py recon --project ./target --full")
+    stdscr.addstr(4, 2, "python main.py recon --project ./target --full -v")
     stdscr.refresh()
 
 
@@ -49,29 +50,33 @@ def run_cli(args, config):
 
     steps = resolve_steps(args)
 
+    log_info(f"project_dir: {project_dir}")
+    log_info(f"history_dir: {history_dir}")
+    log_info(f"steps: {', '.join(sorted(list(steps)))}")
+
     if "subs" in steps:
-        run_subdomain_enum(project_dir, history_dir, args)
+        _run_wrapped("subs", run_subdomain_enum, project_dir, history_dir, args)
 
     if "alive" in steps:
-        run_alive_check(project_dir, history_dir, args)
+        _run_wrapped("alive", run_alive_check, project_dir, history_dir, args)
 
     if "ports_scan" in steps:
-        run_ports_scan(project_dir, history_dir, args)
+        _run_wrapped("ports_scan", run_ports_scan, project_dir, history_dir, args)
 
     if "dirs" in steps:
-        run_dirsearch(project_dir, history_dir, args)
+        _run_wrapped("dirs", run_dirsearch, project_dir, history_dir, args)
 
     if "params" in steps:
-        run_param_mining(project_dir, history_dir, args)
+        _run_wrapped("params", run_param_mining, project_dir, history_dir, args)
 
     if "secrets" in steps:
-        run_secretfinder(project_dir, history_dir, args)
+        _run_wrapped("secrets", run_secretfinder, project_dir, history_dir, args)
 
     if "nuclei" in steps:
-        run_nuclei(project_dir, history_dir, args)
+        _run_wrapped("nuclei", run_nuclei, project_dir, history_dir, args)
 
     if "screens" in steps:
-        run_screenshots_placeholder(project_dir, history_dir)
+        _run_wrapped("screens", run_screenshots_placeholder, project_dir, history_dir, args=None)
 
     meta_path = os.path.join(history_dir, "run_meta.json")
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -85,7 +90,24 @@ def run_cli(args, config):
             indent=2,
         )
 
-    print(f"[+] Done. History: {history_dir}")
+    log_ok(f"done -> {history_dir}")
+
+
+def _run_wrapped(step_name, fn, project_dir, history_dir, args):
+    done = time_block(step_name)
+    log_info(f"step_start: {step_name}")
+    try:
+        if args is None:
+            fn(project_dir, history_dir)
+        else:
+            fn(project_dir, history_dir, args)
+        log_ok(f"step_ok: {step_name}")
+    except SystemExit:
+        raise
+    except Exception as e:
+        log_warn(f"step_fail: {step_name} ({type(e).__name__}: {e})")
+    finally:
+        done()
 
 
 def resolve_steps(args):
@@ -127,8 +149,7 @@ def resolve_steps(args):
 
 
 def get_wildcard_list_path(project_dir, wildcard_list_name):
-    candidate = os.path.join(project_dir, wildcard_list_name)
-    return candidate
+    return os.path.join(project_dir, wildcard_list_name)
 
 
 def fetch_crtsh_domains(domain):
@@ -137,6 +158,7 @@ def fetch_crtsh_domains(domain):
     req = urllib.request.Request(url, headers={"User-Agent": "ryus-recon"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read().decode("utf-8", errors="ignore")
+
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -176,13 +198,15 @@ def run_subdomain_enum(project_dir, history_dir, args):
         ]
         res = run_command(cmd, timeout=3600)
         if res.returncode != 0:
-            print(res.stderr.strip())
+            log_warn(f"subfinder rc={res.returncode}")
+            if res.stderr:
+                log_warn(res.stderr.strip()[:2000])
 
         if os.path.exists(out_path):
             with open(out_path, "r", encoding="utf-8", errors="ignore") as f:
-                combined_candidates.extend([x.strip() for x in f.readlines()])
+                combined_candidates.extend([x.strip() for x in f.readlines() if x.strip()])
     else:
-        print("[!] subfinder not found; skipping subfinder stage")
+        log_warn("subfinder not found; skipping subfinder stage")
 
     with open(wild_path, "r", encoding="utf-8", errors="ignore") as f:
         wild_targets = [x.strip() for x in f.readlines() if x.strip()]
@@ -193,7 +217,8 @@ def run_subdomain_enum(project_dir, history_dir, args):
         try:
             crt_lines.extend(fetch_crtsh_domains(d))
         except Exception as e:
-            print(f"[!] crt.sh fetch failed for {d}: {e}")
+            log_warn(f"crt.sh fetch failed for {d}: {e}")
+
     write_lines(crt_out, crt_lines)
     combined_candidates.extend(crt_lines)
 
@@ -204,7 +229,7 @@ def run_subdomain_enum(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_subs.txt",
     )
-    print(f"[+] subs: +{merged['new_count']} new -> {merged['delta_path']}")
+    log_ok(f"subs: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
 def run_alive_check(project_dir, history_dir, args):
@@ -213,7 +238,7 @@ def run_alive_check(project_dir, history_dir, args):
         raise SystemExit("Missing subs.txt; run --subs first")
 
     if not command_exists("httpx-toolkit"):
-        print("[!] httpx-toolkit not found; skipping alive stage")
+        log_warn("httpx-toolkit not found; skipping alive stage")
         return
 
     out_path = os.path.join(history_dir, "httpx_alive.txt")
@@ -228,9 +253,11 @@ def run_alive_check(project_dir, history_dir, args):
     ]
     res = run_command(cmd, timeout=3600)
     if res.returncode != 0:
-        print(res.stderr.strip())
+        log_warn(f"httpx rc={res.returncode}")
+        if res.stderr:
+            log_warn(res.stderr.strip()[:2000])
 
-    lines = res.stdout.splitlines()
+    lines = res.stdout.splitlines() if res.stdout else []
     write_lines(out_path, lines)
 
     merged = merge_into_canonical(
@@ -240,7 +267,7 @@ def run_alive_check(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_alive.txt",
     )
-    print(f"[+] alive: +{merged['new_count']} new -> {merged['delta_path']}")
+    log_ok(f"alive: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
 def run_ports_scan(project_dir, history_dir, args):
@@ -249,7 +276,11 @@ def run_ports_scan(project_dir, history_dir, args):
         raise SystemExit("Missing subs.txt; run --subs first")
 
     if not command_exists("naabu"):
-        print("[!] naabu not found; skipping ports stage")
+        log_warn("naabu not found; skipping ports stage")
+        return
+
+    if not command_exists("nmap"):
+        log_warn("nmap not found; skipping ports stage")
         return
 
     out_path = os.path.join(history_dir, "naabu_full.txt")
@@ -266,11 +297,13 @@ def run_ports_scan(project_dir, history_dir, args):
     ]
     res = run_command(cmd, timeout=6 * 3600)
     if res.returncode != 0:
-        print(res.stderr.strip())
+        log_warn(f"naabu rc={res.returncode}")
+        if res.stderr:
+            log_warn(res.stderr.strip()[:2000])
 
     if os.path.exists(out_path):
         with open(out_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = [x.strip() for x in f.readlines()]
+            lines = [x.strip() for x in f.readlines() if x.strip()]
     else:
         lines = []
 
@@ -281,7 +314,7 @@ def run_ports_scan(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_ports.txt",
     )
-    print(f"[+] ports: +{merged['new_count']} new -> {merged['delta_path']}")
+    log_ok(f"ports: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
 def run_dirsearch(project_dir, history_dir, args):
@@ -290,7 +323,7 @@ def run_dirsearch(project_dir, history_dir, args):
         raise SystemExit("Missing alive.txt; run --alive first")
 
     if not command_exists("dirsearch"):
-        print("[!] dirsearch not found; skipping dirs stage")
+        log_warn("dirsearch not found; skipping dirs stage")
         return
 
     out_path = os.path.join(history_dir, "dirsearch.txt")
@@ -315,7 +348,9 @@ def run_dirsearch(project_dir, history_dir, args):
     ]
     res = run_command(cmd, timeout=6 * 3600)
     if res.returncode != 0:
-        print(res.stderr.strip())
+        log_warn(f"dirsearch rc={res.returncode}")
+        if res.stderr:
+            log_warn(res.stderr.strip()[:2000])
 
     if os.path.exists(out_path):
         with open(out_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -330,7 +365,7 @@ def run_dirsearch(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_dirs.txt",
     )
-    print(f"[+] dirs: +{merged['new_count']} new -> {merged['delta_path']}")
+    log_ok(f"dirs: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
 def run_param_mining(project_dir, history_dir, args):
@@ -339,14 +374,13 @@ def run_param_mining(project_dir, history_dir, args):
         raise SystemExit("Missing alive.txt; run --alive first")
 
     if not command_exists("gau"):
-        print("[!] gau not found; skipping params stage")
-        return
-    if not command_exists("uro"):
-        print("[!] uro not found; skipping params stage")
+        log_warn("gau not found; skipping params stage")
         return
 
-    # note: gau by default expects domains via stdin; we’ll feed it ourselves per alive host below (simple + safe)
-    # we will do a minimal approach: run gau per host
+    if not command_exists("uro"):
+        log_warn("uro not found; skipping params stage")
+        return
+
     with open(alive_path, "r", encoding="utf-8", errors="ignore") as f:
         alive_urls = [x.strip() for x in f.readlines() if x.strip()]
 
@@ -355,24 +389,30 @@ def run_param_mining(project_dir, history_dir, args):
         host = url.replace("https://", "").replace("http://", "").split("/")[0].strip()
         if not host:
             continue
+
         res = run_command(["gau", host], timeout=120)
-        if res.returncode == 0 and res.stdout:
+        if res.returncode != 0:
+            log_warn(f"gau rc={res.returncode} host={host}")
+            continue
+
+        if res.stdout:
             all_urls.extend(res.stdout.splitlines())
 
     raw_params_path = os.path.join(history_dir, "params_raw.txt")
     write_lines(raw_params_path, all_urls)
 
-    # uro filter
-    uro_in = "\n".join(all_urls).encode("utf-8", errors="ignore")
-    # subprocess wrapper uses list cmd; easiest: write tmp + call uro on file
     tmp_in = os.path.join(history_dir, "uro_in.txt")
-    with open(tmp_in, "wb") as f:
-        f.write(uro_in)
+    with open(tmp_in, "w", encoding="utf-8") as f:
+        for u in all_urls:
+            if u and str(u).strip():
+                f.write(str(u).strip() + "\n")
 
     uro_out = os.path.join(history_dir, "params_filtered.txt")
     res = run_command(["uro", "-i", tmp_in, "-o", uro_out], timeout=600)
     if res.returncode != 0:
-        print(res.stderr.strip())
+        log_warn(f"uro rc={res.returncode}")
+        if res.stderr:
+            log_warn(res.stderr.strip()[:2000])
 
     if os.path.exists(uro_out):
         with open(uro_out, "r", encoding="utf-8", errors="ignore") as f:
@@ -387,7 +427,7 @@ def run_param_mining(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_params.txt",
     )
-    print(f"[+] params: +{merged_params['new_count']} new -> {merged_params['delta_path']}")
+    log_ok(f"params: +{merged_params['new_count']} new -> {merged_params['delta_path']}")
 
     js = [u for u in filtered if u.lower().endswith(".js")]
     merged_js = merge_into_canonical(
@@ -397,7 +437,7 @@ def run_param_mining(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_js.txt",
     )
-    print(f"[+] js: +{merged_js['new_count']} new -> {merged_js['delta_path']}")
+    log_ok(f"js: +{merged_js['new_count']} new -> {merged_js['delta_path']}")
 
 
 def run_secretfinder(project_dir, history_dir, args):
@@ -406,12 +446,12 @@ def run_secretfinder(project_dir, history_dir, args):
         raise SystemExit("Missing js.txt; run --params first")
 
     if not command_exists("python3"):
-        print("[!] python3 not found; skipping secrets stage")
+        log_warn("python3 not found; skipping secrets stage")
         return
 
     secretfinder_path = args.secretfinder_path
     if not os.path.exists(secretfinder_path):
-        print(f"[!] SecretFinder not found at {secretfinder_path}; skipping secrets stage")
+        log_warn(f"SecretFinder not found at {secretfinder_path}; skipping secrets stage")
         return
 
     with open(js_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -421,7 +461,11 @@ def run_secretfinder(project_dir, history_dir, args):
     for url in js_urls:
         cmd = ["python3", secretfinder_path, "-i", url, "-o", "cli"]
         res = run_command(cmd, timeout=120)
-        if res.returncode == 0 and res.stdout:
+        if res.returncode != 0:
+            log_warn(f"SecretFinder rc={res.returncode} url={url}")
+            continue
+
+        if res.stdout:
             findings.extend([x.rstrip("\n") for x in res.stdout.splitlines() if x.strip()])
 
     merged = merge_into_canonical(
@@ -431,7 +475,7 @@ def run_secretfinder(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_secrets.txt",
     )
-    print(f"[+] secrets: +{merged['new_count']} new -> {merged['delta_path']}")
+    log_ok(f"secrets: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
 def run_nuclei(project_dir, history_dir, args):
@@ -440,7 +484,7 @@ def run_nuclei(project_dir, history_dir, args):
         raise SystemExit("Missing params.txt; run --params first")
 
     if not command_exists("nuclei"):
-        print("[!] nuclei not found; skipping nuclei stage")
+        log_warn("nuclei not found; skipping nuclei stage")
         return
 
     out_path = os.path.join(history_dir, "nuclei.txt")
@@ -463,7 +507,9 @@ def run_nuclei(project_dir, history_dir, args):
     ]
     res = run_command(cmd, timeout=6 * 3600)
     if res.returncode != 0:
-        print(res.stderr.strip())
+        log_warn(f"nuclei rc={res.returncode}")
+        if res.stderr:
+            log_warn(res.stderr.strip()[:2000])
 
     if os.path.exists(out_path):
         with open(out_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -478,11 +524,11 @@ def run_nuclei(project_dir, history_dir, args):
         history_dir=history_dir,
         delta_file_name="new_nuclei.txt",
     )
-    print(f"[+] nuclei: +{merged['new_count']} new -> {merged['delta_path']}")
+    log_ok(f"nuclei: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
 def run_screenshots_placeholder(project_dir, history_dir):
     note_path = os.path.join(history_dir, "screenshots_note.txt")
     write_lines(note_path, ["eyewitness stage not implemented yet"])
-    print("[+] screens: placeholder written (eyewitness integration next)")
+    log_ok("screens: placeholder written (eyewitness integration next)")
 
