@@ -345,7 +345,6 @@ def run_param_mining(project_dir, history_dir, args):
         print("[!] uro not found; skipping params stage")
         return
 
-    gau_res = run_command(["gau", "--providers", "wayback,commoncrawl,otx,urlscan", "--threads", "10"], timeout=3600)
     # note: gau by default expects domains via stdin; we’ll feed it ourselves per alive host below (simple + safe)
     # we will do a minimal approach: run gau per host
     with open(alive_path, "r", encoding="utf-8", errors="ignore") as f:
