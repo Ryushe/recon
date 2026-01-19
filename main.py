@@ -4,21 +4,27 @@ import curses
 from core.config import load_config
 from core.plugin_loader import load_modules
 from core.tui import run_tui
+from core.logger import set_verbose_level
 
 
 def build_parser(modules):
     parser = argparse.ArgumentParser(prog="ryus_recon")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Verbose output (-vv for debug)")
+
     subparsers = parser.add_subparsers(dest="command")
 
     for _, module in modules.items():
         if "register_args" in module and callable(module["register_args"]):
             module_parser = subparsers.add_parser(module["cli_name"], help=module["name"])
+            module_parser.add_argument("-v", "--verbose", action="count", default=0, help="Verbose output (-vv for debug)")
             module["register_args"](module_parser)
 
     return parser
 
 
 def run_cli(args, modules, config):
+    set_verbose_level(args.verbose)
+
     command = args.command
     for _, module in modules.items():
         if module.get("cli_name") == command:
@@ -26,6 +32,7 @@ def run_cli(args, modules, config):
                 raise SystemExit(f"Module '{command}' does not support cli mode")
             module["run_cli"](args, config)
             return
+
     raise SystemExit(f"Unknown command: {command}")
 
 
