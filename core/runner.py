@@ -5,10 +5,22 @@ import time
 
 from core.logger import log_info, log_debug, log_warn, get_verbose_level
 from core.rate_limiter import get_global_rate_limiter
+from core.tool_installer import ToolInstaller
 
 
 def command_exists(command_name):
     return shutil.which(command_name) is not None
+
+
+def command_exists_with_installer(command_name):
+    """Check if command exists, using the tool installer for more detailed checks."""
+    # First try the basic check
+    if shutil.which(command_name):
+        return True
+    
+    # Then use the installer for more detailed detection
+    installer = ToolInstaller()
+    return installer.check_tool_installed(command_name)
 
 
 def ensure_dir(path):

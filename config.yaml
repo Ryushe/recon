@@ -32,3 +32,79 @@ wordlists:
 # Application settings
 disable_rate_limiting: false
 
+# Tool installation URLs
+install_urls:
+  # Subdomain enumeration
+  subfinder:
+    type: "go"
+    repository: "projectdiscovery/subfinder/v2/cmd/subfinder"
+    binary_path: "~/.local/bin/subfinder"
+    version: "latest"
+  # Port scanning
+  naabu:
+    type: "go"
+    repository: "projectdiscovery/naabu/v2/cmd/naabu"
+    binary_path: "~/.local/bin/naabu"
+    version: "latest"
+  # HTTP probing
+  httpx-toolkit:
+    type: "go"
+    repository: "projectdiscovery/httpx/cmd/httpx"
+    binary_path: "~/.local/bin/httpx"
+    version: "latest"
+  # Vulnerability scanning
+  nuclei:
+    type: "go"
+    repository: "projectdiscovery/nuclei/v3/cmd/nuclei"
+    binary_path: "~/.local/bin/nuclei"
+    version: "latest"
+  # Directory brute force
+  dirsearch:
+    type: "git"
+    repository: "maurosoria/dirsearch"
+    install_path: "~/tools/dirsearch"
+    python_package: "dirsearch"
+    version: "latest"
+    install_command: "pip3 install dirsearch"
+  # URL extraction
+  gau:
+    type: "go"
+    repository: "lc/gau/v2/cmd/gau"
+    binary_path: "~/.local/bin/gau"
+    version: "latest"
+  # URL parameter extraction
+  uro:
+    type: "go"
+    repository: "s0md3v/uro"
+    binary_path: "~/.local/bin/uro"
+    version: "latest"
+  # Secret finding
+  secretfinder:
+    type: "git"
+    repository: "m4ll0k/SecretFinder"
+    install_path: "~/tools/SecretFinder"
+    script_path: "SecretFinder.py"
+    version: "latest"
+    dependencies: ["python3", "pip3"]
+    install_command: "pip3 install jsbeautifier requests"
+  # Network scanning
+  nmap:
+    type: "system"
+    package_manager:
+      ubuntu: "sudo apt-get install -y nmap"
+      debian: "sudo apt-get install -y nmap"
+      fedora: "sudo dnf install -y nmap"
+      centos: "sudo yum install -y nmap"
+      arch: "sudo pacman -S nmap"
+      macos: "brew install nmap"
+    binary_path: "/usr/bin/nmap"
+    version: "latest"
+
+# Installation settings
+installation:
+  default_install_dir: "~/tools"
+  go_bin_dir: "~/.local/bin"
+  auto_update: false
+  verify_installation: true
+  create_symlinks: true
+

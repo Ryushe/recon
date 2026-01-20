@@ -3,7 +3,7 @@ import json
 import urllib.parse
 import urllib.request
 
-from core.runner import command_exists, run_command, ensure_dir
+from core.runner import command_exists, command_exists_with_installer, run_command, ensure_dir
 from core.project import (
     ensure_project,
     today_history_dir,
@@ -77,9 +77,38 @@ def run_cli(args, config):
         rate_limiter.disable()
         log_info("Rate limiting disabled")
 
-    try:
-        steps = resolve_steps(args)
+    # Check for required tools before proceeding
+    from core.tool_installer import ToolInstaller
+    installer = ToolInstaller()
+    
+    # Map steps to required tools
+    step_tool_map = {
+        "subs": ["subfinder"],
+        "alive": ["httpx-toolkit"],
+        "ports_scan": ["naabu", "nmap"],
+        "dirs": ["dirsearch"],
+        "params": ["gau", "uro"],
+        "secrets": ["secretfinder"],
+        "nuclei": ["nuclei"]
+    }
+    
+    steps = resolve_steps(args)
+    missing_tools = []
+    
+    for step in steps:
+        required_tools = step_tool_map.get(step, [])
+        for tool in required_tools:
+            if not installer.check_tool_installed(tool):
+                missing_tools.append(tool)
+    
+    if missing_tools:
+        log_warn(f"Missing required tools: {', '.join(set(missing_tools))}")
+        log_info("Run with --install-interactive to install missing tools")
+        log_info("Or run with --install to install all tools")
+        log_info("Or run with --check-tools to see detailed status")
+        # Continue anyway - some tools might be available in PATH
 
+    try:
         log_info(f"project_dir: {project_dir}")
         log_info(f"history_dir: {history_dir}")
         log_info(f"steps: {', '.join(sorted(list(steps)))}")
@@ -216,7 +245,7 @@ def run_subdomain_enum(project_dir, history_dir, args):
 
     combined_candidates = []
 
-    if command_exists("subfinder"):
+    if command_exists_with_installer("subfinder"):
         out_path = os.path.join(history_dir, "subfinder_subs.txt")
         cmd = [
             "subfinder",
@@ -270,7 +299,7 @@ def run_alive_check(project_dir, history_dir, args):
     if not os.path.exists(subs_path):
         raise SystemExit("Missing subs.txt; run --subs first")
 
-    if not command_exists("httpx-toolkit"):
+    if not command_exists_with_installer("httpx-toolkit"):
         log_warn("httpx-toolkit not found; skipping alive stage")
         return
 
@@ -308,11 +337,46 @@ def run_ports_scan(project_dir, history_dir, args):
     if not os.path.exists(subs_path):
         raise SystemExit("Missing subs.txt; run --subs first")
 
-    if not command_exists("naabu"):
-        log_warn("naabu not found; skipping ports stage")
+    if not command_exists_with_installer("naabu"):
+        log_warn("naabu not found; skipping ports scan")
         return
 
-    if not command_exists("nmap"):
+    out_path = os.path.join(history_dir, "naabu_ports.txt")
+    cmd = [
+        "naabu",
+        "-list",
+        subs_path,
+        "-ports",
+        "-",
+        "-c",
+        "50",
+        "-silent",
+        "-json",
+        "-o",
+        out_path,
+    ]
+    res = run_command(cmd, timeout=1800)
+    if res.returncode != 0:
+        log_warn(f"naabu rc={res.returncode}")
+        if res.stderr:
+            log_warn(res.stderr.strip()[:2000])
+        return
+
+    ports = set()
+    if os.path.exists(out_path):
+        for line in open(out_path):
+            try:
+                data = json.loads(line.strip())
+                ports.add(str(data.get("port", "")))
+            except json.JSONDecodeError:
+                continue
+
+    if ports:
+        ports_str = ",".join(sorted(ports))
+    else:
+        ports_str = "80,443"
+
+    if not command_exists_with_installer("nmap"):
         log_warn("nmap not found; skipping ports stage")
         return
 
@@ -355,7 +419,7 @@ def run_dirsearch(project_dir, history_dir, args):
     if not os.path.exists(alive_path):
         raise SystemExit("Missing alive.txt; run --alive first")
 
-    if not command_exists("dirsearch"):
+    if not command_exists_with_installer("dirsearch"):
         log_warn("dirsearch not found; skipping dirs stage")
         return
 
@@ -424,11 +488,11 @@ def run_param_mining(project_dir, history_dir, args):
     if not os.path.exists(alive_path):
         raise SystemExit("Missing alive.txt; run --alive first")
 
-    if not command_exists("gau"):
+    if not command_exists_with_installer("gau"):
         log_warn("gau not found; skipping params stage")
         return
 
-    if not command_exists("uro"):
+    if not command_exists_with_installer("uro"):
         log_warn("uro not found; skipping params stage")
         return
 
@@ -496,7 +560,7 @@ def run_secretfinder(project_dir, history_dir, args):
     if not os.path.exists(js_path):
         raise SystemExit("Missing js.txt; run --params first")
 
-    if not command_exists("python3"):
+    if not command_exists("python3"):  # Keep basic check for python3
         log_warn("python3 not found; skipping secrets stage")
         return
 
@@ -534,7 +598,7 @@ def run_nuclei(project_dir, history_dir, args):
     if not os.path.exists(params_path):
         raise SystemExit("Missing params.txt; run --params first")
 
-    if not command_exists("nuclei"):
+    if not command_exists_with_installer("nuclei"):
         log_warn("nuclei not found; skipping nuclei stage")
         return
 
