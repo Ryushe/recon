@@ -37,25 +37,25 @@ install_urls:
   # Subdomain enumeration
   subfinder:
     type: "go"
-    repository: "projectdiscovery/subfinder/v2/cmd/subfinder"
+    repository: "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
     binary_path: "~/.local/bin/subfinder"
     version: "latest"
   # Port scanning
   naabu:
     type: "go"
-    repository: "projectdiscovery/naabu/v2/cmd/naabu"
+    repository: "github.com/projectdiscovery/naabu/v2/cmd/naabu"
     binary_path: "~/.local/bin/naabu"
     version: "latest"
   # HTTP probing
   httpx-toolkit:
     type: "go"
-    repository: "projectdiscovery/httpx/cmd/httpx"
+    repository: "github.com/projectdiscovery/httpx/cmd/httpx"
     binary_path: "~/.local/bin/httpx"
     version: "latest"
   # Vulnerability scanning
   nuclei:
     type: "go"
-    repository: "projectdiscovery/nuclei/v3/cmd/nuclei"
+    repository: "github.com/projectdiscovery/nuclei/v3/cmd/nuclei"
     binary_path: "~/.local/bin/nuclei"
     version: "latest"
   # Directory brute force
@@ -65,17 +65,17 @@ install_urls:
     install_path: "~/tools/dirsearch"
     python_package: "dirsearch"
     version: "latest"
-    install_command: "pip3 install dirsearch"
+    install_command: "python3 -m pip install dirsearch"
   # URL extraction
   gau:
     type: "go"
-    repository: "lc/gau/v2/cmd/gau"
+    repository: "github.com/lc/gau/v2/cmd/gau"
     binary_path: "~/.local/bin/gau"
     version: "latest"
   # URL parameter extraction
   uro:
     type: "go"
-    repository: "s0md3v/uro"
+    repository: "github.com/s0md3v/uro"
     binary_path: "~/.local/bin/uro"
     version: "latest"
   # Secret finding
@@ -107,4 +107,9 @@ installation:
   auto_update: false
   verify_installation: true
   create_symlinks: true
+  prerequisites:
+    ubuntu_debian: "sudo apt-get install -y git golang-go python3-pip libpcap-dev"
+    fedora_centos: "sudo dnf install -y git golang python3-pip libpcap-devel"
+    arch: "sudo pacman -S git go python-pip libpcap"
+    macos: "brew install go python3 libpcap"
 

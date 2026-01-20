@@ -13,8 +13,8 @@ from core.config import load_config
 
 
 class ToolInstaller:
-    def __init__(self, config: Dict = None):
-        self.config = config or load_config()
+    def __init__(self, config: Optional[Dict] = None):
+        self.config = config or load_config() or {}
         self.install_config = self.config.get('install_urls', {})
         self.install_settings = self.config.get('installation', {})
         self.system = platform.system().lower()
@@ -50,12 +50,20 @@ class ToolInstaller:
                 return True
             python_package = tool_config.get('python_package', '')
             if python_package:
-                try:
-                    result = subprocess.run([sys.executable, '-m', 'pip', 'show', python_package], 
-                                          capture_output=True, text=True, timeout=10)
-                    return result.returncode == 0
-                except subprocess.TimeoutExpired:
-                    return False
+                # Try multiple pip commands
+                for pip_cmd in ['pip3', 'pip', 'python3 -m pip', 'python -m pip']:
+                    try:
+                        if 'python' in pip_cmd:
+                            cmd = pip_cmd.split()
+                        else:
+                            cmd = [pip_cmd]
+                        cmd.extend(['show', python_package])
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                        if result.returncode == 0:
+                            return True
+                    except (subprocess.TimeoutExpired, FileNotFoundError):
+                        continue
+                return False
                     
         elif tool_type == 'system':
             binary_path = tool_config.get('binary_path', '')
@@ -146,6 +154,17 @@ class ToolInstaller:
                     log_ok(f"Successfully installed {tool_name}")
                     return True
                 else:
+                    # Try alternative pip commands if the first one fails
+                    if 'pip3' in install_command and 'not found' in result.stderr:
+                        log_info(f"pip3 not found, trying alternative pip commands...")
+                        alternatives = ['pip install dirsearch', 'python3 -m pip install dirsearch', 'python -m pip install dirsearch']
+                        for alt_cmd in alternatives:
+                            log_info(f"Trying: {alt_cmd}")
+                            result = subprocess.run(alt_cmd, shell=True, capture_output=True, text=True, timeout=300)
+                            if result.returncode == 0:
+                                log_ok(f"Successfully installed {tool_name} with alternative command")
+                                return True
+                    
                     log_warn(f"Failed to install {tool_name}: {result.stderr}")
                     return False
             except subprocess.TimeoutExpired:
@@ -297,8 +316,61 @@ def install_tools_interactive() -> None:
                 log_info(f"  {status_str} {tool_name}")
 
 
+def check_and_install_prerequisites() -> bool:
+    """Check and suggest installation of prerequisites."""
+    installer = ToolInstaller()
+    install_settings = installer.install_settings
+    prerequisites = install_settings.get('prerequisites', {})
+    
+    system = installer.system
+    
+    if system == 'linux':
+        # Try to detect the Linux distribution
+        try:
+            with open('/etc/os-release', 'r') as f:
+                os_release = f.read().lower()
+            if 'ubuntu' in os_release or 'debian' in os_release:
+                cmd = prerequisites.get('ubuntu_debian', '')
+            elif 'fedora' in os_release or 'centos' in os_release or 'rhel' in os_release:
+                cmd = prerequisites.get('fedora_centos', '')
+            elif 'arch' in os_release:
+                cmd = prerequisites.get('arch', '')
+            else:
+                log_warn(f"Unsupported Linux distribution. Please install git, golang, python3-pip, libpcap-dev manually")
+                return False
+        except FileNotFoundError:
+            log_warn(f"Could not determine Linux distribution. Please install git, golang, python3-pip, libpcap-dev manually")
+            return False
+    elif system == 'darwin':
+        cmd = prerequisites.get('macos', '')
+    else:
+        log_warn(f"Unsupported operating system: {system}")
+        return False
+    
+    if cmd:
+        log_info("Installing prerequisites...")
+        log_info(f"Running: {cmd}")
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
+            if result.returncode == 0:
+                log_ok("Prerequisites installed successfully!")
+                return True
+            else:
+                log_warn(f"Failed to install prerequisites: {result.stderr}")
+                return False
+        except subprocess.TimeoutExpired:
+            log_warn("Prerequisite installation timed out")
+            return False
+    
+    return False
+
+
 def install_tools_all() -> None:
     """Install all configured tools."""
+    log_info("Checking prerequisites...")
+    if not check_and_install_prerequisites():
+        log_warn("Prerequisites installation failed. Some tools may not install correctly.")
+    
     installer = ToolInstaller()
     results = installer.install_all_tools()
     
