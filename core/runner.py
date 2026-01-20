@@ -1,8 +1,10 @@
 import os
 import shutil
 import subprocess
+import time
 
 from core.logger import log_info, log_debug, log_warn, get_verbose_level
+from core.rate_limiter import get_global_rate_limiter
 
 
 def command_exists(command_name):
@@ -14,10 +16,18 @@ def ensure_dir(path):
     return path
 
 
-def run_command(cmd_list, cwd=None, timeout=None):
+def run_command(cmd_list, cwd=None, timeout=None, apply_rate_limit=False):
     if get_verbose_level() >= 1:
         cwd_part = f" (cwd={cwd})" if cwd else ""
         log_info(f"run: {' '.join(cmd_list)}{cwd_part}")
+
+    # Apply rate limiting if requested
+    if apply_rate_limit:
+        rate_limiter = get_global_rate_limiter()
+        tool_name = cmd_list[0] if cmd_list else None
+        wait_time = rate_limiter.acquire(tool_name)
+        if wait_time > 0:
+            time.sleep(wait_time)
 
     try:
         res = subprocess.run(

@@ -1,3 +1,34 @@
 framework_name: Recon
 output_dir: workspaces
 
+# Global rate limiting configuration
+rate_limiting:
+  global_rps: 10
+  burst_capacity: 50
+  tool_limits:
+    subfinder: 25
+    httpx: 50
+    nuclei: 30
+    dirsearch: 20
+    naabu: 100
+    gau: 15
+    uro: 15
+
+# Word list configuration
+wordlists:
+  default_dirsearch: "/usr/share/wordlists/OneListForAll/onelistforallshort.txt"
+  custom_directories:
+    - "./wordlists"
+    - "~/.config/recon/wordlists"
+    - "/usr/share/wordlists"
+  validation:
+    min_size: 10
+    max_size: 1000000
+  predefined_sizes:
+    small: "/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt"
+    medium: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+    large: "/usr/share/wordlists/dirbuster/directory-list-2.3-big.txt"
+
+# Application settings
+disable_rate_limiting: false
+

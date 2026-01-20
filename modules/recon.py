@@ -11,6 +11,9 @@ from core.project import (
     write_lines,
 )
 from core.logger import log_info, log_ok, log_warn, time_block
+from core.logger import init_logger, close_logger
+from core.rate_limiter import get_global_rate_limiter, configure_rate_limiter
+from core.wordlist_manager import WordlistManager
 
 module_name = "Recon"
 module_key = "1"
@@ -37,6 +40,15 @@ def register_args(parser):
     parser.add_argument("--secretfinder_path", default="SecretFinder.py", help="Path to SecretFinder.py")
     parser.add_argument("--nuclei_templates", default="/opt/Custom-Nuclei-Templates", help="Nuclei templates path")
 
+    # Global rate limiting arguments
+    parser.add_argument("--global_rps", type=int, help="Global requests per second (overrides config)")
+    parser.add_argument("--disable_rate_limiting", action="store_true", help="Disable all rate limiting")
+
+    # Custom word list arguments
+    parser.add_argument("--wordlist", help="Custom wordlist path for dirsearch")
+    parser.add_argument("--wordlist_size", choices=['small', 'medium', 'large'], help="Predefined wordlist size for dirsearch")
+    parser.add_argument("--wordlist_dir", help="Directory containing custom wordlists")
+
 
 def run_tui(stdscr, config):
     stdscr.addstr(2, 2, "Use CLI for recon execution:")
@@ -48,49 +60,70 @@ def run_cli(args, config):
     project_dir = ensure_project(args.project)
     history_dir = today_history_dir(project_dir)
 
-    steps = resolve_steps(args)
+    init_logger(project_dir, module_name="recon")
 
-    log_info(f"project_dir: {project_dir}")
-    log_info(f"history_dir: {history_dir}")
-    log_info(f"steps: {', '.join(sorted(list(steps)))}")
+    # Configure rate limiting
+    configure_rate_limiter(config)
+    
+    # Override global rate limiting if specified
+    if args.global_rps:
+        rate_limiter = get_global_rate_limiter()
+        rate_limiter.set_global_rate(args.global_rps)
+        log_info(f"Global rate limit overridden: {args.global_rps} RPS")
+    
+    # Disable rate limiting if requested
+    if args.disable_rate_limiting:
+        rate_limiter = get_global_rate_limiter()
+        rate_limiter.disable()
+        log_info("Rate limiting disabled")
 
-    if "subs" in steps:
-        _run_wrapped("subs", run_subdomain_enum, project_dir, history_dir, args)
+    try:
+        steps = resolve_steps(args)
 
-    if "alive" in steps:
-        _run_wrapped("alive", run_alive_check, project_dir, history_dir, args)
+        log_info(f"project_dir: {project_dir}")
+        log_info(f"history_dir: {history_dir}")
+        log_info(f"steps: {', '.join(sorted(list(steps)))}")
 
-    if "ports_scan" in steps:
-        _run_wrapped("ports_scan", run_ports_scan, project_dir, history_dir, args)
+        if "subs" in steps:
+            _run_wrapped("subs", run_subdomain_enum, project_dir, history_dir, args)
 
-    if "dirs" in steps:
-        _run_wrapped("dirs", run_dirsearch, project_dir, history_dir, args)
+        if "alive" in steps:
+            _run_wrapped("alive", run_alive_check, project_dir, history_dir, args)
 
-    if "params" in steps:
-        _run_wrapped("params", run_param_mining, project_dir, history_dir, args)
+        if "ports_scan" in steps:
+            _run_wrapped("ports_scan", run_ports_scan, project_dir, history_dir, args)
 
-    if "secrets" in steps:
-        _run_wrapped("secrets", run_secretfinder, project_dir, history_dir, args)
+        if "dirs" in steps:
+            _run_wrapped("dirs", run_dirsearch, project_dir, history_dir, args)
 
-    if "nuclei" in steps:
-        _run_wrapped("nuclei", run_nuclei, project_dir, history_dir, args)
+        if "params" in steps:
+            _run_wrapped("params", run_param_mining, project_dir, history_dir, args)
 
-    if "screens" in steps:
-        _run_wrapped("screens", run_screenshots_placeholder, project_dir, history_dir, args=None)
+        if "secrets" in steps:
+            _run_wrapped("secrets", run_secretfinder, project_dir, history_dir, args)
 
-    meta_path = os.path.join(history_dir, "run_meta.json")
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "project_dir": project_dir,
-                "history_dir": history_dir,
-                "steps": sorted(list(steps)),
-            },
-            f,
-            indent=2,
-        )
+        if "nuclei" in steps:
+            _run_wrapped("nuclei", run_nuclei, project_dir, history_dir, args)
 
-    log_ok(f"done -> {history_dir}")
+        if "screens" in steps:
+            _run_wrapped("screens", run_screenshots_placeholder, project_dir, history_dir, args=None)
+
+        meta_path = os.path.join(history_dir, "run_meta.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "project_dir": project_dir,
+                    "history_dir": history_dir,
+                    "steps": sorted(list(steps)),
+                },
+                f,
+                indent=2,
+            )
+
+        log_ok(f"run_complete -> {history_dir}")
+
+    finally:
+        close_logger()
 
 
 def _run_wrapped(step_name, fn, project_dir, history_dir, args):
@@ -196,7 +229,7 @@ def run_subdomain_enum(project_dir, history_dir, args):
             "-rl",
             str(args.rl),
         ]
-        res = run_command(cmd, timeout=3600)
+        res = run_command(cmd, timeout=3600, apply_rate_limit=True)
         if res.returncode != 0:
             log_warn(f"subfinder rc={res.returncode}")
             if res.stderr:
@@ -251,7 +284,7 @@ def run_alive_check(project_dir, history_dir, args):
         "-threads",
         str(args.threads),
     ]
-    res = run_command(cmd, timeout=3600)
+    res = run_command(cmd, timeout=3600, apply_rate_limit=True)
     if res.returncode != 0:
         log_warn(f"httpx rc={res.returncode}")
         if res.stderr:
@@ -327,7 +360,25 @@ def run_dirsearch(project_dir, history_dir, args):
         return
 
     out_path = os.path.join(history_dir, "dirsearch.txt")
-    wordlist = "/usr/share/wordlists/OneListForAll/onelistforallshort.txt"
+    
+    # Use wordlist manager to get the appropriate wordlist
+    wordlist_manager = WordlistManager()
+    try:
+        if args.wordlist:
+            wordlist = wordlist_manager.get_wordlist(custom_path=args.wordlist)
+        elif args.wordlist_size:
+            wordlist = wordlist_manager.get_wordlist(args.wordlist_size)
+        else:
+            wordlist = wordlist_manager.get_wordlist()
+        
+        # Validate the wordlist
+        if not wordlist_manager.validate_wordlist(wordlist):
+            log_warn(f"Wordlist validation failed: {wordlist}")
+            return
+            
+    except FileNotFoundError as e:
+        log_warn(f"Wordlist not found: {e}")
+        return
 
     cmd = [
         "dirsearch",
@@ -346,7 +397,7 @@ def run_dirsearch(project_dir, history_dir, args):
         "-w",
         wordlist,
     ]
-    res = run_command(cmd, timeout=6 * 3600)
+    res = run_command(cmd, timeout=6 * 3600, apply_rate_limit=True)
     if res.returncode != 0:
         log_warn(f"dirsearch rc={res.returncode}")
         if res.stderr:
@@ -390,7 +441,7 @@ def run_param_mining(project_dir, history_dir, args):
         if not host:
             continue
 
-        res = run_command(["gau", host], timeout=120)
+        res = run_command(["gau", host], timeout=120, apply_rate_limit=True)
         if res.returncode != 0:
             log_warn(f"gau rc={res.returncode} host={host}")
             continue
@@ -408,7 +459,7 @@ def run_param_mining(project_dir, history_dir, args):
                 f.write(str(u).strip() + "\n")
 
     uro_out = os.path.join(history_dir, "params_filtered.txt")
-    res = run_command(["uro", "-i", tmp_in, "-o", uro_out], timeout=600)
+    res = run_command(["uro", "-i", tmp_in, "-o", uro_out], timeout=600, apply_rate_limit=True)
     if res.returncode != 0:
         log_warn(f"uro rc={res.returncode}")
         if res.stderr:
@@ -505,7 +556,7 @@ def run_nuclei(project_dir, history_dir, args):
         "-es",
         "info",
     ]
-    res = run_command(cmd, timeout=6 * 3600)
+    res = run_command(cmd, timeout=6 * 3600, apply_rate_limit=True)
     if res.returncode != 0:
         log_warn(f"nuclei rc={res.returncode}")
         if res.stderr:
