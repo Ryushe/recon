@@ -46,7 +46,7 @@ install_urls:
     binary_path: "~/.local/bin/naabu"
     version: "latest"
   # HTTP probing
-  httpx-toolkit:
+  httpx:
     type: "go"
     repository: "github.com/projectdiscovery/httpx/cmd/httpx"
     binary_path: "~/.local/bin/httpx"

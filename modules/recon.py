@@ -16,10 +16,22 @@ from core.logger import log_info, log_ok, log_warn, time_block
 from core.logger import init_logger, close_logger
 from core.rate_limiter import get_global_rate_limiter, configure_rate_limiter
 from core.wordlist_manager import WordlistManager
+from core.webhook import send_directory_notification, send_secret_notification, send_vulnerability_notification, is_valid_webhook_url
 
-module_name = "Run subfinder, crt.sh, httpx, dirsearch to find domains, subdomains and endpoints"
+module_name = "Run subfinder, crt.sh, httpx, dirsearch to find"
 module_key = "1"
 cli_name = "recon"
+
+
+def get_discord_webhook_url():
+    """Read Discord webhook URL from user's config file"""
+    webhook_file = os.path.expanduser("~/.recon_discord")
+    if os.path.exists(webhook_file):
+        with open(webhook_file, "r", encoding="utf-8") as f:
+            webhook_url = f.read().strip()
+            if webhook_url and is_valid_webhook_url(webhook_url):
+                return webhook_url
+    return None
 
 
 def register_args(parser):
@@ -41,6 +53,7 @@ def register_args(parser):
 
     parser.add_argument("--secretfinder_path", default="$HOME/tools/SecretFinder/SecretFinder.py", help="Path to SecretFinder.py")
     parser.add_argument("--nuclei_templates", default="/usr/share/custom-nuclei", help="Nuclei templates path")
+    parser.add_argument("--discord-webhook", action="store_true", help="Send Discord notifications (requires webhook file)")
 
     # Global rate limiting arguments
     parser.add_argument("--global_rps", type=int, help="Global requests per second (overrides config)")
@@ -86,7 +99,7 @@ def run_cli(args, config):
     # Map steps to required tools
     step_tool_map = {
         "subs": ["subfinder"],
-        "alive": ["httpx-toolkit"],
+        "alive": ["httpx"],
         "ports_scan": ["naabu", "nmap"],
         "dirs": ["dirsearch"],
         "params": ["gau", "uro"],
@@ -301,8 +314,8 @@ def run_alive_check(project_dir, history_dir, args):
     if not os.path.exists(subs_path):
         raise SystemExit("Missing subs.txt; run --subs first")
 
-    if not command_exists_with_installer("httpx-toolkit"):
-        log_warn("httpx-toolkit not found; skipping alive stage")
+    if not command_exists_with_installer("httpx"):
+        log_warn("httpx not found; skipping alive stage")
         return
 
     # Check if this is the first run by looking for existing alive files
@@ -343,7 +356,7 @@ def run_alive_check(project_dir, history_dir, args):
 
     out_path = os.path.join(history_dir, "httpx_alive.txt")
     cmd = [
-        "httpx-toolkit",
+        "httpx",
         "-l",
         target_subs_path,
         "-ports",
@@ -615,6 +628,31 @@ def run_dirsearch(project_dir, history_dir, args):
     )
     log_ok(f"dirs: +{merged['new_count']} new -> {merged['delta_path']}")
 
+    # Send Discord notification if flag is passed and new directories found
+    discord_webhook_enabled = getattr(args, 'discord_webhook', False)
+    if discord_webhook_enabled and merged['new_count'] > 0:
+        webhook_url = get_discord_webhook_url()
+        if not webhook_url:
+            log_warn("Discord webhook enabled but no valid webhook found in ~/.recon_discord")
+        else:
+            project_name = os.path.basename(project_dir.rstrip('/'))
+            
+            # Get sample directories for notification
+            sample_dirs = []
+            if os.path.exists(merged['delta_path']):
+                with open(merged['delta_path'], "r", encoding="utf-8", errors="ignore") as f:
+                    sample_dirs = [line.strip() for line in f.readlines()[:5] if line.strip()]
+            
+            success = send_directory_notification(
+                webhook_url=webhook_url,
+                project_name=project_name,
+                new_dirs_count=merged['new_count'],
+                sample_dirs=sample_dirs
+            )
+            
+            if success:
+                log_info("Discord directory notification sent")
+
 
 def run_param_mining(project_dir, history_dir, args):
     alive_path = os.path.join(project_dir, "alive.txt")
@@ -806,6 +844,31 @@ def run_secretfinder(project_dir, history_dir, args):
         delta_file_name="new_secrets.txt",
     )
     log_ok(f"secrets: +{merged['new_count']} new -> {merged['delta_path']}")
+
+    # Send Discord notification if flag is passed and new secrets found
+    discord_webhook_enabled = getattr(args, 'discord_webhook', False)
+    if discord_webhook_enabled and merged['new_count'] > 0:
+        webhook_url = get_discord_webhook_url()
+        if not webhook_url:
+            log_warn("Discord webhook enabled but no valid webhook found in ~/.recon_discord")
+        else:
+            project_name = os.path.basename(project_dir.rstrip('/'))
+            
+            # Get sample secrets for notification
+            sample_secrets = []
+            if os.path.exists(merged['delta_path']):
+                with open(merged['delta_path'], "r", encoding="utf-8", errors="ignore") as f:
+                    sample_secrets = [line.strip() for line in f.readlines()[:3] if line.strip()]
+            
+            success = send_secret_notification(
+                webhook_url=webhook_url,
+                project_name=project_name,
+                new_secrets_count=merged['new_count'],
+                sample_secrets=sample_secrets
+            )
+            
+            if success:
+                log_info("Discord secrets notification sent")
 
 
 def run_nuclei(project_dir, history_dir, args):

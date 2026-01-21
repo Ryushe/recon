@@ -362,7 +362,7 @@ Tool Installation Status: 3/9
 ==================================================
   ✓ subfinder (go)
   ✗ naabu (go)  
-  ✗ httpx-toolkit (go)
+  ✗ httpx (go)
   ✗ nuclei (go)
   ✓ dirsearch (git)
   ✗ gau (go)
@@ -370,7 +370,7 @@ Tool Installation Status: 3/9
   ✓ secretfinder (git)
   ✗ nmap (system)
 
-Missing tools: naabu, httpx-toolkit, nuclei, gau, uro, nmap
+Missing tools: naabu, httpx, nuclei, gau, uro, nmap
 Run with --install-interactive to install them.
 ```
 

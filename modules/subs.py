@@ -12,10 +12,22 @@ from core.project import (
 from core.logger import log_info, log_ok, log_warn, time_block
 from core.logger import init_logger, close_logger
 from core.rate_limiter import get_global_rate_limiter, configure_rate_limiter
+from core.webhook import send_subdomain_notification, is_valid_webhook_url
 
 module_key = "subs"
 module_name = "Scans Default: subs.txt for new subodomains"
 cli_name = "subs"
+
+
+def get_discord_webhook_url():
+    """Read Discord webhook URL from user's config file"""
+    webhook_file = os.path.expanduser("~/.recon_discord")
+    if os.path.exists(webhook_file):
+        with open(webhook_file, "r", encoding="utf-8") as f:
+            webhook_url = f.read().strip()
+            if webhook_url and is_valid_webhook_url(webhook_url):
+                return webhook_url
+    return None
 
 
 def register_args(parser):
@@ -24,6 +36,7 @@ def register_args(parser):
     parser.add_argument("--ports", default="80,443", help="Ports for httpx")
     parser.add_argument("--threads", type=int, default=50, help="Threads for httpx")
     parser.add_argument("--rl", type=int, default=10, help="Rate limit for subfinder")
+    parser.add_argument("--discord-webhook", action="store_true", help="Send Discord notifications (requires webhook file)")
 
 
 def run_tui(stdscr, config):
@@ -36,7 +49,7 @@ def run_cli(args, config):
     history_dir = today_history_dir(project_dir)
     ensure_dir(history_dir)
 
-    init_logger(project_dir, config["log_level"])
+    init_logger(project_dir,  module_name="subs")
 
     run_subs_discovery(project_dir, history_dir, args)
 
@@ -61,8 +74,8 @@ def run_subs_discovery(project_dir, history_dir, args):
         log_warn("subfinder not found; skipping subs discovery")
         return
 
-    if not command_exists_with_installer("httpx-toolkit"):
-        log_warn("httpx-toolkit not found; skipping subs discovery")
+    if not command_exists_with_installer("httpx"):
+        log_warn("httpx not found; skipping subs discovery")
         return
 
     if not command_exists_with_installer("anew"):
@@ -136,10 +149,10 @@ def run_subs_discovery(project_dir, history_dir, args):
     else:
         log_info(f"Appended subdomains to {history_subs_path}")
 
-    # Check which subdomains are alive using httpx-toolkit
+# Check which subdomains are alive using httpx
     alive_out_path = os.path.join(history_dir, "new_alive.txt")
     alive_cmd = [
-        "httpx-toolkit",
+        "httpx",
         "-l",
         subs_out_path,
         "-ports",
@@ -152,7 +165,7 @@ def run_subs_discovery(project_dir, history_dir, args):
     
     alive_res = run_command(alive_cmd, timeout=3600, apply_rate_limit=True)
     if alive_res.returncode != 0:
-        log_warn(f"httpx-toolkit rc={alive_res.returncode}")
+        log_warn(f"httpx rc={alive_res.returncode}")
         if alive_res.stderr:
             log_warn(alive_res.stderr.strip()[:2000])
         return
@@ -186,3 +199,28 @@ def run_subs_discovery(project_dir, history_dir, args):
 
     # Log results
     log_ok(f"subs: +{len(alive_subdomains)} alive subdomains appended to {alive_txt_path}")
+
+    # Send Discord notification if flag is passed
+    discord_webhook_enabled = getattr(args, 'discord_webhook', False)
+    if discord_webhook_enabled:
+        # Read webhook URL from config file
+        webhook_url = get_discord_webhook_url()
+        if not webhook_url:
+            log_warn("Discord webhook enabled but no valid webhook found in ~/.recon_discord")
+        else:
+            # Extract project name from path
+            project_name = os.path.basename(project_dir.rstrip('/'))
+            
+            # Send notification
+            success = send_subdomain_notification(
+                webhook_url=webhook_url,
+                project_name=project_name,
+                new_subs_count=len(all_subdomains),
+                new_alive_count=len(alive_subdomains),
+                sample_subs=alive_subdomains[:5] if alive_subdomains else None
+            )
+            
+            if success:
+                log_info("Discord notification sent successfully")
+            else:
+                log_warn("Failed to send Discord notification")
