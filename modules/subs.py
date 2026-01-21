@@ -125,6 +125,17 @@ def run_subs_discovery(project_dir, history_dir, args):
 
     log_info(f"Found {len(all_subdomains)} subdomains, checking aliveness")
 
+    # Use anew to append new subdomains to new_subs.txt in history folder
+    history_subs_path = os.path.join(history_dir, "new_subs.txt")
+    subs_shell_cmd = f"cat {subs_out_path} | anew {history_subs_path}"
+    subs_anew_res = run_command(["bash", "-c", subs_shell_cmd], timeout=300)
+    if subs_anew_res.returncode != 0:
+        log_warn(f"anew (subdomains) rc={subs_anew_res.returncode}")
+        if subs_anew_res.stderr:
+            log_warn(subs_anew_res.stderr.strip()[:2000])
+    else:
+        log_info(f"Appended subdomains to {history_subs_path}")
+
     # Check which subdomains are alive using httpx-toolkit
     alive_out_path = os.path.join(history_dir, "new_alive.txt")
     alive_cmd = [
