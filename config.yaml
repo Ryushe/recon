@@ -1,5 +1,4 @@
 framework_name: Recon
-output_dir: workspaces
 
 # Global rate limiting configuration
 rate_limiting:

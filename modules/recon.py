@@ -2,6 +2,7 @@ import os
 import json
 import urllib.parse
 import urllib.request
+from datetime import date
 
 from core.runner import command_exists, command_exists_with_installer, run_command, ensure_dir
 from core.project import (
@@ -9,13 +10,14 @@ from core.project import (
     today_history_dir,
     merge_into_canonical,
     write_lines,
+    read_lines,
 )
 from core.logger import log_info, log_ok, log_warn, time_block
 from core.logger import init_logger, close_logger
 from core.rate_limiter import get_global_rate_limiter, configure_rate_limiter
 from core.wordlist_manager import WordlistManager
 
-module_name = "Recon"
+module_name = "Run subfinder, crt.sh, httpx, dirsearch to find domains, subdomains and endpoints"
 module_key = "1"
 cli_name = "recon"
 
@@ -37,8 +39,8 @@ def register_args(parser):
     parser.add_argument("--nuclei", action="store_true", help="Run nuclei on filtered params")
     parser.add_argument("--screens", action="store_true", help="Placeholder for eyewitness")
 
-    parser.add_argument("--secretfinder_path", default="SecretFinder.py", help="Path to SecretFinder.py")
-    parser.add_argument("--nuclei_templates", default="/opt/Custom-Nuclei-Templates", help="Nuclei templates path")
+    parser.add_argument("--secretfinder_path", default="$HOME/tools/SecretFinder/SecretFinder.py", help="Path to SecretFinder.py")
+    parser.add_argument("--nuclei_templates", default="/usr/share/custom-nuclei", help="Nuclei templates path")
 
     # Global rate limiting arguments
     parser.add_argument("--global_rps", type=int, help="Global requests per second (overrides config)")
@@ -303,11 +305,47 @@ def run_alive_check(project_dir, history_dir, args):
         log_warn("httpx-toolkit not found; skipping alive stage")
         return
 
+    # Check if this is the first run by looking for existing alive files
+    alive_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                         if os.path.exists(os.path.join(project_dir, "history", d, "httpx_alive.txt"))]
+    
+    if alive_history_dirs and len(alive_history_dirs) > 1:
+        # Find the previous run directory (excluding today)
+        today = date.today().isoformat()
+        previous_dirs = [d for d in alive_history_dirs if d != today]
+        if previous_dirs:
+            previous_dir = max(previous_dirs)  # Get the most recent previous run
+            previous_alive = os.path.join(project_dir, "history", previous_dir, "httpx_alive.txt")
+            previously_alive = set()
+            
+            if os.path.exists(previous_alive):
+                previously_alive = set(read_lines(previous_alive))
+            
+            # Get all existing subs and filter out those already checked
+            all_subs = read_lines(subs_path)
+            new_subs = [sub for sub in all_subs if sub not in previously_alive]
+            
+            if not new_subs:
+                log_info("No new subdomains to check for aliveness")
+                return
+                
+            # Create temporary file with new subs only
+            temp_subs_path = os.path.join(history_dir, "new_subs.txt")
+            write_lines(temp_subs_path, new_subs)
+            target_subs_path = temp_subs_path
+            log_info(f"Checking {len(new_subs)} new subdomains for aliveness")
+        else:
+            target_subs_path = subs_path
+    else:
+        # First run - check all subs
+        target_subs_path = subs_path
+        log_info("First alive check run - checking all subdomains")
+
     out_path = os.path.join(history_dir, "httpx_alive.txt")
     cmd = [
         "httpx-toolkit",
         "-l",
-        subs_path,
+        target_subs_path,
         "-ports",
         args.ports,
         "-threads",
@@ -341,11 +379,57 @@ def run_ports_scan(project_dir, history_dir, args):
         log_warn("naabu not found; skipping ports scan")
         return
 
+    # Check if this is the first run by looking for existing port scan files
+    ports_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                         if os.path.exists(os.path.join(project_dir, "history", d, "naabu_ports.txt"))]
+    
+    if ports_history_dirs and len(ports_history_dirs) > 1:
+        # Find the previous run directory (excluding today)
+        today = date.today().isoformat()
+        previous_dirs = [d for d in ports_history_dirs if d != today]
+        if previous_dirs:
+            previous_dir = max(previous_dirs)  # Get the most recent previous run
+            previous_ports = os.path.join(project_dir, "history", previous_dir, "naabu_ports.txt")
+            previously_scanned = set()
+            
+            if os.path.exists(previous_ports):
+                # Extract hosts from previous port scan results
+                with open(previous_ports, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        try:
+                            data = json.loads(line)
+                            host = data.get("host", "")
+                            if host:
+                                previously_scanned.add(host)
+                        except json.JSONDecodeError:
+                            continue
+            
+            # Get all existing subs and filter out those already scanned
+            all_subs = read_lines(subs_path)
+            new_subs = [sub for sub in all_subs if sub not in previously_scanned]
+            
+            if not new_subs:
+                log_info("No new subdomains to scan for ports")
+                return
+                
+            # Create temporary file with new subs only
+            temp_subs_path = os.path.join(history_dir, "new_subs_for_ports.txt")
+            write_lines(temp_subs_path, new_subs)
+            target_subs_path = temp_subs_path
+            log_info(f"Scanning {len(new_subs)} new subdomains for ports")
+        else:
+            target_subs_path = subs_path
+    else:
+        # First run - scan all subs
+        target_subs_path = subs_path
+        log_info("First port scan run - scanning all subdomains")
+
     out_path = os.path.join(history_dir, "naabu_ports.txt")
     cmd = [
         "naabu",
         "-list",
-        subs_path,
+        target_subs_path,
         "-ports",
         "-",
         "-c",
@@ -384,7 +468,7 @@ def run_ports_scan(project_dir, history_dir, args):
     cmd = [
         "naabu",
         "-list",
-        subs_path,
+        target_subs_path,
         "-c",
         "50",
         "-nmap-cli",
@@ -423,6 +507,55 @@ def run_dirsearch(project_dir, history_dir, args):
         log_warn("dirsearch not found; skipping dirs stage")
         return
 
+    # Check if this is the first run by looking for existing dirsearch files
+    dirsearch_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                             if os.path.exists(os.path.join(project_dir, "history", d, "dirsearch.txt"))]
+    
+    if dirsearch_history_dirs and len(dirsearch_history_dirs) > 1:
+        # Find the previous run directory (excluding today)
+        today = date.today().isoformat()
+        previous_dirs = [d for d in dirsearch_history_dirs if d != today]
+        if previous_dirs:
+            previous_dir = max(previous_dirs)  # Get the most recent previous run
+            previous_dirs_file = os.path.join(project_dir, "history", previous_dir, "dirsearch.txt")
+            previously_scanned = set()
+            
+            if os.path.exists(previous_dirs_file):
+                # Extract hosts from previous dirsearch results
+                with open(previous_dirs_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            # Extract host from URL if present
+                            if "http" in line:
+                                host = line.split("://")[1].split("/")[0].strip()
+                                if host:
+                                    previously_scanned.add(host)
+            
+            # Get all existing alive URLs and filter out those already scanned
+            all_alive = read_lines(alive_path)
+            new_alive = []
+            for url in all_alive:
+                host = url.replace("https://", "").replace("http://", "").split("/")[0].strip()
+                if host and host not in previously_scanned:
+                    new_alive.append(url)
+            
+            if not new_alive:
+                log_info("No new alive hosts to scan for directories")
+                return
+                
+            # Create temporary file with new alive URLs only
+            temp_alive_path = os.path.join(history_dir, "new_alive_for_dirs.txt")
+            write_lines(temp_alive_path, new_alive)
+            target_alive_path = temp_alive_path
+            log_info(f"Scanning {len(new_alive)} new alive hosts for directories")
+        else:
+            target_alive_path = alive_path
+    else:
+        # First run - scan all alive URLs
+        target_alive_path = alive_path
+        log_info("First directory scan run - scanning all alive URLs")
+
     out_path = os.path.join(history_dir, "dirsearch.txt")
     
     # Use wordlist manager to get the appropriate wordlist
@@ -447,7 +580,7 @@ def run_dirsearch(project_dir, history_dir, args):
     cmd = [
         "dirsearch",
         "-l",
-        alive_path,
+        target_alive_path,
         "-x",
         "600,502,439,404,400",
         "-R",
@@ -496,22 +629,64 @@ def run_param_mining(project_dir, history_dir, args):
         log_warn("uro not found; skipping params stage")
         return
 
-    with open(alive_path, "r", encoding="utf-8", errors="ignore") as f:
-        alive_urls = [x.strip() for x in f.readlines() if x.strip()]
+    # Get only new alive URLs for this run
+    existing_alive = read_lines(os.path.join(project_dir, "alive.txt"))
+    
+    # Check if this is the first run by looking for existing params files
+    params_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                          if os.path.exists(os.path.join(project_dir, "history", d, "params_raw.txt"))]
+    
+    if params_history_dirs and len(params_history_dirs) > 1:
+        # Find the previous run directory (excluding today)
+        today = date.today().isoformat()
+        previous_dirs = [d for d in params_history_dirs if d != today]
+        if previous_dirs:
+            previous_dir = max(previous_dirs)  # Get the most recent previous run
+            previous_params = os.path.join(project_dir, "history", previous_dir, "params_raw.txt")
+            previously_processed_urls = set()
+            
+            # Extract unique hosts from previous params to avoid reprocessing
+            if os.path.exists(previous_params):
+                with open(previous_params, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            # Extract host from URL
+                            host = line.replace("https://", "").replace("http://", "").split("/")[0].strip()
+                            if host:
+                                previously_processed_urls.add(host)
+            
+            # Only process alive URLs whose hosts weren't processed before
+            new_hosts = []
+            for url in existing_alive:
+                host = url.replace("https://", "").replace("http://", "").split("/")[0].strip()
+                if host and host not in previously_processed_urls:
+                    new_hosts.append(url)
+            
+            if not new_hosts:
+                log_info("No new alive hosts to process for param mining")
+                return
+                
+            # Create temporary file with new URLs only
+            temp_alive_path = os.path.join(history_dir, "new_alive.txt")
+            write_lines(temp_alive_path, new_hosts)
+            target_alive_path = temp_alive_path
+            log_info(f"Processing {len(new_hosts)} new alive hosts for param mining")
+        else:
+            target_alive_path = alive_path
+    else:
+        # First run - process all alive URLs
+        target_alive_path = alive_path
+        log_info("First param mining run - processing all alive URLs")
 
-    all_urls = []
-    for url in alive_urls:
-        host = url.replace("https://", "").replace("http://", "").split("/")[0].strip()
-        if not host:
-            continue
-
-        res = run_command(["gau", host], timeout=120, apply_rate_limit=True)
-        if res.returncode != 0:
-            log_warn(f"gau rc={res.returncode} host={host}")
-            continue
-
-        if res.stdout:
-            all_urls.extend(res.stdout.splitlines())
+    # Run gau on target URLs: cat [target] | gau
+    shell_cmd = f"cat {target_alive_path} | gau"
+    gau_res = run_command(["bash", "-c", shell_cmd], timeout=120, apply_rate_limit=True)
+    if gau_res.returncode != 0:
+        log_warn(f"gau failed with return code {gau_res.returncode}")
+        return
+    
+    all_urls = gau_res.stdout.splitlines() if gau_res.stdout else []
 
     raw_params_path = os.path.join(history_dir, "params_raw.txt")
     write_lines(raw_params_path, all_urls)
@@ -569,11 +744,51 @@ def run_secretfinder(project_dir, history_dir, args):
         log_warn(f"SecretFinder not found at {secretfinder_path}; skipping secrets stage")
         return
 
-    with open(js_path, "r", encoding="utf-8", errors="ignore") as f:
-        js_urls = [x.strip() for x in f.readlines() if x.strip()]
+    # Check if this is the first run by looking for existing secretfinder files
+    secretfinder_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                                 if os.path.exists(os.path.join(project_dir, "history", d, "secrets.txt"))]
+    
+    if secretfinder_history_dirs and len(secretfinder_history_dirs) > 1:
+        # Find the previous run directory (excluding today)
+        today = date.today().isoformat()
+        previous_dirs = [d for d in secretfinder_history_dirs if d != today]
+        if previous_dirs:
+            previous_dir = max(previous_dirs)  # Get the most recent previous run
+            previous_secrets = os.path.join(project_dir, "history", previous_dir, "secrets.txt")
+            previously_scanned = set()
+            
+            if os.path.exists(previous_secrets):
+                # Extract URLs from previous secretfinder results
+                with open(previous_secrets, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and "http" in line:
+                            # Extract URL from the line (assuming format contains the URL)
+                            parts = line.split()
+                            for part in parts:
+                                if part.startswith("http"):
+                                    previously_scanned.add(part)
+                                    break
+            
+            # Get all existing JS URLs and filter out those already scanned
+            all_js = read_lines(js_path)
+            new_js = [js for js in all_js if js not in previously_scanned]
+            
+            if not new_js:
+                log_info("No new JS URLs to scan for secrets")
+                return
+                
+            log_info(f"Scanning {len(new_js)} new JS URLs for secrets")
+        else:
+            new_js = read_lines(js_path)
+            log_info("First secrets scan run - scanning all JS URLs")
+    else:
+        # First run - scan all JS URLs
+        new_js = read_lines(js_path)
+        log_info("First secrets scan run - scanning all JS URLs")
 
     findings = []
-    for url in js_urls:
+    for url in new_js:
         cmd = ["python3", secretfinder_path, "-i", url, "-o", "cli"]
         res = run_command(cmd, timeout=120)
         if res.returncode != 0:
@@ -602,11 +817,60 @@ def run_nuclei(project_dir, history_dir, args):
         log_warn("nuclei not found; skipping nuclei stage")
         return
 
+    # Check if this is the first run by looking for existing nuclei files
+    nuclei_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                         if os.path.exists(os.path.join(project_dir, "history", d, "nuclei.txt"))]
+    
+    if nuclei_history_dirs and len(nuclei_history_dirs) > 1:
+        # Find the previous run directory (excluding today)
+        today = date.today().isoformat()
+        previous_dirs = [d for d in nuclei_history_dirs if d != today]
+        if previous_dirs:
+            previous_dir = max(previous_dirs)  # Get the most recent previous run
+            previous_nuclei = os.path.join(project_dir, "history", previous_dir, "nuclei.txt")
+            previously_scanned = set()
+            
+            if os.path.exists(previous_nuclei):
+                # Extract hosts from previous nuclei results
+                with open(previous_nuclei, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("["):
+                            # Extract host from URL if present
+                            if "http" in line:
+                                host = line.split("://")[1].split("/")[0].strip()
+                                if host:
+                                    previously_scanned.add(host)
+            
+            # Get all existing params and filter out those already scanned
+            all_params = read_lines(params_path)
+            new_params = []
+            for param in all_params:
+                host = param.replace("https://", "").replace("http://", "").split("/")[0].strip()
+                if host and host not in previously_scanned:
+                    new_params.append(param)
+            
+            if not new_params:
+                log_info("No new params to scan with nuclei")
+                return
+                
+            # Create temporary file with new params only
+            temp_params_path = os.path.join(history_dir, "new_params.txt")
+            write_lines(temp_params_path, new_params)
+            target_params_path = temp_params_path
+            log_info(f"Scanning {len(new_params)} new params with nuclei")
+        else:
+            target_params_path = params_path
+    else:
+        # First run - scan all params
+        target_params_path = params_path
+        log_info("First nuclei scan run - scanning all params")
+
     out_path = os.path.join(history_dir, "nuclei.txt")
     cmd = [
         "nuclei",
         "-list",
-        params_path,
+        target_params_path,
         "-c",
         "70",
         "-rl",

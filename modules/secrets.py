@@ -1,4 +1,4 @@
-module_name = "Secrets Module"
+module_name = "Dork, find js files, endpoints and more"
 module_key = "2"
 cli_name = "secrets"
 

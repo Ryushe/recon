@@ -183,7 +183,7 @@ python3 main.py
 
 Navigate with arrow keys, select modules, and configure options interactively.
 
-## 🧩 Modules
+## Modules
 
 ### Recon Module (`recon`)
 
@@ -227,7 +227,7 @@ Primary reconnaissance module with the following stages:
 
 Placeholder module for secret scanning functionality.
 
-## 🚦 Rate Limiting
+## Rate Limiting
 
 The framework implements a **token bucket algorithm** for global rate limiting.
 
@@ -279,7 +279,7 @@ python3 main.py recon --project ./target --full --global_rps 3
 python3 main.py recon --project ./target --full --disable_rate_limiting
 ```
 
-## 📚 Word Lists
+## Word Lists
 
 Flexible wordlist management for directory brute forcing.
 
@@ -317,7 +317,7 @@ The framework validates wordlists before use:
 3. Predefined sizes path
 4. Default wordlist path
 
-## 🔧 Tool Management
+## Tool Management
 
 ### Tool Installation System
 
@@ -407,7 +407,6 @@ Create `~/.config/recon/config.yaml` for user-specific settings:
 
 ```yaml
 framework_name: Recon
-output_dir: workspaces
 
 # User preferences
 rate_limiting:
@@ -450,8 +449,7 @@ def run_tui(stdscr, config):
     pass
 ```
 
-## 📄 License
+## License
 
 [License information - e.g., MIT License]
 
-For issues, feature requests, or contributions, please visit the project repository.
