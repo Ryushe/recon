@@ -224,3 +224,5 @@ def run_subs_discovery(project_dir, history_dir, args):
                 log_info("Discord notification sent successfully")
             else:
                 log_warn("Failed to send Discord notification")
+
+                # working on discord integration

@@ -49,7 +49,13 @@ def register_args(parser):
     parser.add_argument("--params", action="store_true", help="Run gau + uro + js extraction")
     parser.add_argument("--secrets", action="store_true", help="Run SecretFinder on js list")
     parser.add_argument("--nuclei", action="store_true", help="Run nuclei on filtered params")
-    parser.add_argument("--screens", action="store_true", help="Placeholder for eyewitness")
+    parser.add_argument("--screens", action="store_true", help="Run Eyewitness to capture screenshots")
+    
+    # Eyewitness specific arguments
+    parser.add_argument("--eyewitness_args", help="Custom arguments to pass to Eyewitness (e.g., '--timeout 30 --no-dns')")
+    parser.add_argument("--eyewitness_targets", choices=['all', 'latest'], default='latest', 
+                       help="Target selection for Eyewitness: 'all' (all subs) or 'latest' (most recent alive file)")
+    parser.add_argument("--eyewitness_file", help="Custom file with targets for Eyewitness")
 
     parser.add_argument("--secretfinder_path", default="$HOME/tools/SecretFinder/SecretFinder.py", help="Path to SecretFinder.py")
     parser.add_argument("--nuclei_templates", default="/usr/share/custom-nuclei", help="Nuclei templates path")
@@ -104,7 +110,8 @@ def run_cli(args, config):
         "dirs": ["dirsearch"],
         "params": ["gau", "uro"],
         "secrets": ["secretfinder"],
-        "nuclei": ["nuclei"]
+        "nuclei": ["nuclei"],
+        "screens": ["eyewitness"]
     }
     
     steps = resolve_steps(args)
@@ -150,7 +157,7 @@ def run_cli(args, config):
             _run_wrapped("nuclei", run_nuclei, project_dir, history_dir, args)
 
         if "screens" in steps:
-            _run_wrapped("screens", run_screenshots_placeholder, project_dir, history_dir, args=None)
+            _run_wrapped("screens", run_screenshots, project_dir, history_dir, args)
 
         meta_path = os.path.join(history_dir, "run_meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -193,10 +200,8 @@ def resolve_steps(args):
             "subs",
             "alive",
             "ports_scan",
-            "dirs",
             "params",
             "secrets",
-            "nuclei",
             "screens",
         }
 
@@ -969,8 +974,79 @@ def run_nuclei(project_dir, history_dir, args):
     log_ok(f"nuclei: +{merged['new_count']} new -> {merged['delta_path']}")
 
 
-def run_screenshots_placeholder(project_dir, history_dir):
-    note_path = os.path.join(history_dir, "screenshots_note.txt")
-    write_lines(note_path, ["eyewitness stage not implemented yet"])
-    log_ok("screens: placeholder written (eyewitness integration next)")
+def run_screenshots(project_dir, history_dir, args):
+    if not command_exists_with_installer("eyewitness"):
+        log_warn("eyewitness not found; skipping screenshots stage")
+        return
+
+    # Determine target file based on user preferences
+    target_file = None
+    
+    if args.eyewitness_file:
+        # Use custom file provided by user
+        if not os.path.exists(args.eyewitness_file):
+            log_warn(f"Custom eyewitness file not found: {args.eyewitness_file}")
+            return
+        target_file = args.eyewitness_file
+        log_info(f"Using custom target file: {args.eyewitness_file}")
+    elif args.eyewitness_targets == 'all':
+        # Use all subs
+        subs_file = os.path.join(project_dir, "subs.txt")
+        if not os.path.exists(subs_file):
+            log_warn(f"Subs file not found: {subs_file}")
+            return
+        target_file = subs_file
+        log_info("Using all subs from subs.txt")
+    else:  # latest (default)
+        # Use latest alive file
+        alive_file = os.path.join(project_dir, "alive.txt")
+        if not os.path.exists(alive_file):
+            log_warn(f"Alive file not found: {alive_file}")
+            return
+        target_file = alive_file
+        log_info("Using latest alive targets from alive.txt")
+
+    # Create eyewitness output directory
+    eyewitness_dir = os.path.join(history_dir, "eyewitness")
+    os.makedirs(eyewitness_dir, exist_ok=True)
+
+    # Build eyewitness command with custom arguments if provided
+    cmd = [
+        "eyewitness",
+        "--headless",
+        "-f", target_file,
+        "-d", eyewitness_dir
+    ]
+
+    # Add custom arguments if provided
+    if args.eyewitness_args:
+        custom_args = args.eyewitness_args.split()
+        cmd.extend(custom_args)
+        log_info(f"Using custom Eyewitness arguments: {args.eyewitness_args}")
+
+    # Run eyewitness
+    log_info(f"Running Eyewitness on {len(read_lines(target_file))} targets")
+    res = run_command(cmd, timeout=1800, apply_rate_limit=True)  # 30 minute timeout
+    
+    if res.returncode != 0:
+        log_warn(f"Eyewitness failed with return code {res.returncode}")
+        if res.stderr:
+            log_warn(f"Eyewitness stderr: {res.stderr}")
+        return
+
+    # Create summary file with results info
+    summary_path = os.path.join(history_dir, "screenshots_summary.txt")
+    target_count = len(read_lines(target_file))
+    
+    summary_lines = [
+        f"Eyewitness completed successfully",
+        f"Target file: {target_file}",
+        f"Target count: {target_count}",
+        f"Output directory: {eyewitness_dir}",
+        f"Custom arguments: {args.eyewitness_args or 'None'}",
+        f"Target selection: {args.eyewitness_targets}"
+    ]
+    
+    write_lines(summary_path, summary_lines)
+    log_ok(f"Eyewitness screenshots completed - results in {eyewitness_dir}")
 
