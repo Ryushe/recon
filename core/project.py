@@ -39,6 +39,10 @@ def write_lines(path, lines):
             f.write(s + "\n")
 
 
+def get_wildcard_list_path(project_dir, wildcard_list_name):
+    return os.path.join(project_dir, wildcard_list_name)
+
+
 def append_lines(path, lines):
     with open(path, "a", encoding="utf-8") as f:
         for line in lines:
