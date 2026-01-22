@@ -28,13 +28,23 @@ def ensure_dir(path):
     return path
 
 
-def run_command(cmd_list, cwd=None, timeout=None, apply_rate_limit=False):
+def run_command(cmd_list, cwd=None, timeout=None, apply_rate_limit=False, rate_limit=None):
     if get_verbose_level() >= 1:
         cwd_part = f" (cwd={cwd})" if cwd else ""
         log_info(f"run: {' '.join(cmd_list)}{cwd_part}")
 
     # Apply rate limiting if requested
-    if apply_rate_limit:
+    if apply_rate_limit and rate_limit:
+        from core.rate_limiter import get_global_rate_limiter
+        rate_limiter = get_global_rate_limiter()
+        tool_name = cmd_list[0] if cmd_list else None
+        rate_limiter.set_tool_limit(tool_name, rate_limit)
+        wait_time = rate_limiter.acquire(tool_name)
+        if wait_time > 0:
+            time.sleep(wait_time)
+    elif apply_rate_limit:
+        # Global rate limiting (original logic)
+        from core.rate_limiter import get_global_rate_limiter
         rate_limiter = get_global_rate_limiter()
         tool_name = cmd_list[0] if cmd_list else None
         wait_time = rate_limiter.acquire(tool_name)

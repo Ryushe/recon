@@ -34,7 +34,6 @@ def register_args(parser):
     parser.add_argument("--wildcard_list", default="wild.txt", help="Wildcard scope list inside project dir")
     parser.add_argument("--ports", default="443,80,8080,8000,8888", help="Ports for httpx")
     parser.add_argument("--threads", type=int, default=200, help="Threads for httpx/dirsearch where applicable")
-    parser.add_argument("--rl", type=int, default=25, help="Rate limit for subfinder")
     parser.add_argument("--full", action="store_true", help="Run full recon chain")
 
     parser.add_argument("--subs", action="store_true", help="Run subdomain enumeration")
@@ -56,9 +55,17 @@ def register_args(parser):
     parser.add_argument("--nuclei_templates", default="/usr/share/custom-nuclei", help="Nuclei templates path")
     parser.add_argument("--discord-webhook", action="store_true", help="Send Discord notifications (requires webhook file)")
 
-    # Global rate limiting arguments
-    parser.add_argument("--global_rps", type=int, help="Global requests per second (overrides config)")
-    parser.add_argument("--disable_rate_limiting", action="store_true", help="Disable all rate limiting")
+    # Tool-specific rate limiting arguments
+    parser.add_argument("--subfinder_rl", type=int, default=25, help="Subfinder rate limit (req/sec)")
+    parser.add_argument("--httpx_rl", type=int, default=50, help="Httpx rate limit (req/sec)")
+    parser.add_argument("--naabu_rl", type=int, default=100, help="Naabu rate limit (req/sec)")
+    parser.add_argument("--nmap_rl", type=int, default=30, help="Nmap rate limit (req/sec)")
+    parser.add_argument("--dirsearch_rl", type=int, default=20, help="Dirsearch rate limit (req/sec)")
+    parser.add_argument("--gau_rl", type=int, default=15, help="GAU rate limit (req/sec)")
+    parser.add_argument("--gau_timeout", type=int, default=600, help="GAU timeout in seconds (default: 600s = 10 minutes)")
+    parser.add_argument("--uro_rl", type=int, default=15, help="URO rate limit (req/sec)")
+    parser.add_argument("--nuclei_rl", type=int, default=30, help="Nuclei rate limit (req/sec)")
+    parser.add_argument("--eyewitness_rl", type=int, default=10, help="Eyewitness rate limit (req/sec)")
 
     # Custom word list arguments
     parser.add_argument("--wordlist", help="Custom wordlist path for dirsearch")
@@ -78,20 +85,8 @@ def run_cli(args, config):
 
     init_logger(project_dir, module_name="recon")
 
-    # Configure rate limiting
+    # Configure rate limiting (for tool-specific limits in config)
     configure_rate_limiter(config)
-    
-    # Override global rate limiting if specified
-    if args.global_rps:
-        rate_limiter = get_global_rate_limiter()
-        rate_limiter.set_global_rate(args.global_rps)
-        log_info(f"Global rate limit overridden: {args.global_rps} RPS")
-    
-    # Disable rate limiting if requested
-    if args.disable_rate_limiting:
-        rate_limiter = get_global_rate_limiter()
-        rate_limiter.disable()
-        log_info("Rate limiting disabled")
 
     # Check for required tools before proceeding
     from core.tool_installer import ToolInstaller
@@ -265,11 +260,11 @@ def run_alive_check(project_dir, history_dir, args):
 
 def run_ports_scan(project_dir, history_dir, args):
     """Execute port scanning using NaabuTool and NmapTool"""
-    # First run naabu for port discovery
-    naabu_tool = ToolFactory.get_tool('naabu')
-    naabu_tool.run(project_dir, history_dir, args)
+    # Run naabu for port discovery on alive hosts
+    # naabu_tool = ToolFactory.get_tool('naabu')
+    # naabu_tool.run(project_dir, history_dir, args)
     
-    # Then run nmap for detailed scanning
+    # Run independent nmap for detailed scanning with incremental logic
     nmap_tool = ToolFactory.get_tool('nmap')
     nmap_tool.run(project_dir, history_dir, args)
 
@@ -300,6 +295,7 @@ def run_nuclei(project_dir, history_dir, args):
 
 def run_screenshots(project_dir, history_dir, args):
     """Execute screenshot capture using EyewitnessTool"""
-    tool = ToolFactory.get_tool('eyewitness')
+    from core.tools import EyewitnessTool
+    tool = EyewitnessTool()
     tool.run(project_dir, history_dir, args)
 

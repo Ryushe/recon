@@ -5,7 +5,7 @@ Tool execution module - Centralized external tool command execution
 import os
 from datetime import date
 from core.runner import run_command, command_exists_with_installer
-from core.project import merge_into_canonical, write_lines, read_lines, ensure_dir
+from core.project import merge_into_canonical, write_lines, read_lines
 from core.logger import log_info, log_ok, log_warn, time_block
 from core.webhook import send_directory_notification, send_secret_notification, send_vulnerability_notification, is_valid_webhook_url
 
@@ -23,10 +23,26 @@ class BaseTool:
             return False
         return True
     
-    def execute_command(self, cmd, timeout=600, apply_rate_limit=True):
-        """Execute command with standard error handling"""
+    def should_skip(self, project_dir, history_dir, skip_file=None):
+        """Check if tool should be skipped based on existing results"""
+        if skip_file and os.path.exists(skip_file):
+            log_info(f"{self.name}: skipping - {skip_file} exists")
+            return True
+        return False
+    
+    def execute_command(self, cmd, timeout=600, rate_limit=None):
+        """Execute command with tool-specific rate limiting"""
         log_info(f"Running: {' '.join(cmd)}")
-        res = run_command(cmd, timeout=timeout, apply_rate_limit=apply_rate_limit)
+        
+        # Apply rate limiting if specified
+        if rate_limit is not None:
+            from core.rate_limiter import get_global_rate_limiter
+            limiter = get_global_rate_limiter()
+            limiter.set_tool_limit(self.name, rate_limit)
+            log_info(f"{self.name}: Using rate limit {rate_limit} RPS")
+            res = run_command(cmd, timeout=timeout, apply_rate_limit=True)
+        else:
+            res = run_command(cmd, timeout=timeout, apply_rate_limit=False)
         
         if res.returncode != 0:
             log_warn(f"{self.name} failed with return code {res.returncode}")
@@ -105,10 +121,12 @@ class SubfinderTool(BaseTool):
             "subfinder", "-dL", wild_path,
             "-all", "-recursive",
             "-o", os.path.join(history_dir, "subfinder_subs.txt"),
-            "-rl", str(args.rl)
+            "-rl", str(args.subfinder_rl)
         ]
         
-        res = self.execute_command(cmd)
+        # Get rate limit from args and execute
+        rate_limit = getattr(args, 'subfinder_rl', None)
+        res = self.execute_command(cmd, rate_limit=rate_limit)
         if res:
             subfinder_path = os.path.join(history_dir, "subfinder_subs.txt")
             if os.path.exists(subfinder_path):
@@ -191,14 +209,15 @@ class HttpxTool(BaseTool):
         cmd = [
             "httpx", "-l", temp_targets_path,
             "-o", os.path.join(history_dir, "httpx_raw.txt"),
-            "-json", "-status-code", "-title", "-tech-detect",
-            "-silent", "-no-color"
+            "-threads", "200", "-ports", "443,80,8080,8000,8888"
         ]
         
         if hasattr(args, 'threads') and args.threads:
             cmd.extend(["-threads", str(args.threads)])
         
-        res = self.execute_command(cmd, timeout=1200)
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'httpx_rl', None)
+        res = self.execute_command(cmd, rate_limit=rate_limit, timeout=1200)
         if not res:
             return
         
@@ -229,8 +248,13 @@ class NaabuTool(BaseTool):
         super().__init__("naabu")
     
     def run(self, project_dir, history_dir, args):
-        """Execute naabu port scan"""
+        """Execute naabu port scan with skip logic"""
         if not self.check_tool_exists():
+            return
+        
+        # Check for manual skip file
+        if self.should_skip(project_dir, history_dir, "naabu_complete.txt"):
+            log_info("Naabu: manually skipped - naabu_complete.txt exists")
             return
         
         alive_file = os.path.join(project_dir, "alive.txt")
@@ -248,7 +272,9 @@ class NaabuTool(BaseTool):
         if hasattr(args, 'threads') and args.threads:
             cmd.extend(["-c", str(args.threads)])
         
-        res = self.execute_command(cmd, timeout=1800)
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'naabu_rl', None)
+        res = self.execute_command(cmd, rate_limit=rate_limit, timeout=1800)
         if not res:
             return
         
@@ -271,56 +297,147 @@ class NaabuTool(BaseTool):
                             continue
         
         if ports:
-            self.process_results(project_dir, history_dir, ports, "ports.txt", "new_ports.txt")
+            merged = self.process_results(project_dir, history_dir, ports, "ports.txt", "new_ports.txt")
+            log_ok(f"naabu: +{len(ports)} new ports -> {merged['delta_path']}")
 
 
 class NmapTool(BaseTool):
-    """Nmap detailed scanning tool"""
+    """Nmap detailed scanning tool with incremental two-pass scanning"""
     
     def __init__(self):
         super().__init__("nmap")
     
+    def get_incremental_hosts(self, project_dir, history_dir):
+        """Get hosts to scan (avoid re-scanning)"""
+        # Get alive hosts to scan
+        alive_hosts = set()
+        alive_file = os.path.join(project_dir, "alive.txt")
+        if os.path.exists(alive_file):
+            alive_hosts = set(read_lines(alive_file))
+        
+        # Check for previous nmap scans to avoid re-scanning
+        history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
+                       if os.path.exists(os.path.join(project_dir, "history", d, "nmap_raw.xml"))]
+        
+        if len(history_dirs) > 1:
+            today = date.today().isoformat()
+            previous_dirs = [d for d in history_dirs if d != today]
+            if previous_dirs:
+                previous_dir = max(previous_dirs)
+                previous_nmap = os.path.join(project_dir, "history", previous_dir, "nmap_raw.xml")
+                previously_scanned = set()
+                
+                if os.path.exists(previous_nmap):
+                    import xml.etree.ElementTree as ET
+                    try:
+                        tree = ET.parse(previous_nmap)
+                        root = tree.getroot()
+                        for host in root.findall(".//host"):
+                            address = host.find(".//address[@addrtype='ipv4']")
+                            if address is not None:
+                                ip = address.get("addr")
+                                if ip:
+                                    previously_scanned.add(ip)
+                    except:
+                        pass  # If XML parsing fails, just scan all
+                
+                # Only scan hosts not previously scanned
+                new_hosts = [host for host in alive_hosts if host not in previously_scanned]
+                log_info(f"Nmap incremental: scanning {len(new_hosts)} new hosts (skipping {len(alive_hosts) - len(new_hosts)} previously scanned)")
+                return new_hosts
+        
+        # First run - scan all alive hosts
+        log_info(f"Nmap first run: scanning all {len(alive_hosts)} alive hosts")
+        return list(alive_hosts)
+    
     def run(self, project_dir, history_dir, args):
-        """Execute nmap on top ports"""
+        """Execute two-pass nmap scanning with skip logic"""
         if not self.check_tool_exists():
             return
         
-        ports_file = os.path.join(project_dir, "ports.txt")
-        if not os.path.exists(ports_file):
-            log_warn("No ports.txt file found for nmap scanning")
+        # Check for manual skip files
+        if self.should_skip(project_dir, history_dir, "nmap_quick.xml"):
+            log_info("Nmap: manually skipped - nmap_quick.xml exists")
+            return
+        if self.should_skip(project_dir, history_dir, "nmap_intense.xml"):
+            log_info("Nmap: manually skipped - nmap_intense.xml exists") 
             return
         
-        # Extract unique hosts from ports.txt
-        hosts = set()
-        for line in read_lines(ports_file):
-            host = line.split(":")[0]
-            hosts.add(host)
-        
+        # Get hosts to scan (with incremental logic)
+        hosts = self.get_incremental_hosts(project_dir, history_dir)
         if not hosts:
-            log_warn("No hosts found for nmap scanning")
+            log_info("No new hosts to scan with nmap")
             return
         
         hosts_file = os.path.join(history_dir, "hosts_for_nmap.txt")
-        write_lines(hosts_file, list(hosts))
+        write_lines(hosts_file, hosts)
         
-        cmd = [
+        # Define interesting ports for quick scan
+        interesting_ports = ['8080', '8443', '8888', '8000', '8081']
+        
+        # First pass: Quick scan on interesting ports
+        log_info("Nmap pass 1: Quick scan on interesting ports")
+        quick_cmd = [
             "nmap", "-iL", hosts_file,
-            "-oX", os.path.join(history_dir, "nmap_raw.xml"),
-            "-oN", os.path.join(history_dir, "nmap_raw.txt"),
-            "-sV", "-O", "--version-intensity", "2",
-            "-T4", "-p", "21,22,23,25,53,80,110,111,135,139,143,443,993,995,1723,3306,3389,5432,5900,8080,8443"
+            "-oX", os.path.join(history_dir, "nmap_quick.xml"),
+            "-oN", os.path.join(history_dir, "nmap_quick.txt"),
+            "-T4", "-p", ",".join(interesting_ports),
+            "--open", "-v"
         ]
         
-        res = self.execute_command(cmd, timeout=3600)
-        if not res:
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'nmap_rl', None)
+        quick_res = self.execute_command(quick_cmd, timeout=1800, rate_limit=rate_limit)  # 30 minutes
+        if not quick_res:
+            log_warn("Quick nmap scan failed")
             return
         
-        # Parse nmap results for open services
-        services = []
-        nmap_xml_path = os.path.join(history_dir, "nmap_raw.xml")
-        if os.path.exists(nmap_xml_path):
+        # Parse quick scan results to find hosts with open ports
+        hosts_with_ports = set()
+        quick_xml_path = os.path.join(history_dir, "nmap_quick.xml")
+        if os.path.exists(quick_xml_path):
             import xml.etree.ElementTree as ET
-            tree = ET.parse(nmap_xml_path)
+            tree = ET.parse(quick_xml_path)
+            root = tree.getroot()
+            for host in root.findall(".//host"):
+                address = host.find(".//address[@addrtype='ipv4']")
+                if address is not None:
+                    ip = address.get("addr")
+                    # Check if any ports are open
+                    open_ports = host.findall(".//port/state[@state='open']")
+                    if open_ports:
+                        hosts_with_ports.add(ip)
+        
+        if not hosts_with_ports:
+            log_info("No hosts with open ports found in quick scan")
+            return
+        
+        # Second pass: Intense scan only on hosts with open ports
+        log_info(f"Nmap pass 2: Intense scan on {len(hosts_with_ports)} hosts with open ports")
+        intense_hosts_file = os.path.join(history_dir, "hosts_with_ports.txt")
+        write_lines(intense_hosts_file, list(hosts_with_ports))
+        
+        intense_cmd = [
+            "nmap", "-iL", intense_hosts_file,
+            "-oX", os.path.join(history_dir, "nmap_intense.xml"),
+            "-oN", os.path.join(history_dir, "nmap_intense.txt"),
+            "-sV", "-sC", 
+            "-T3", "-p", "1-65535"
+        ]
+        
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'nmap_rl', None)
+        intense_res = self.execute_command(intense_cmd, timeout=3600, rate_limit=rate_limit)  # 60 minutes
+        if not intense_res:
+            log_warn("Intense nmap scan failed")
+            return
+        
+        # Parse intense scan results for final output
+        services = []
+        intense_xml_path = os.path.join(history_dir, "nmap_intense.xml")
+        if os.path.exists(intense_xml_path):
+            import xml.etree.ElementTree as ET
+            tree = ET.parse(intense_xml_path)
             root = tree.getroot()
             
             for host in root.findall(".//host"):
@@ -335,7 +452,18 @@ class NmapTool(BaseTool):
                             services.append(f"{ip}:{port_id} ({service_name})")
         
         if services:
-            self.process_results(project_dir, history_dir, services, "services.txt", "new_services.txt")
+            merged = self.process_results(project_dir, history_dir, services, "services.txt", "new_services.txt")
+            log_info(f"Nmap completed: {merged['new_count']} new services from {len(hosts_with_ports)} hosts with open ports")
+            
+            # Create completion markers
+            quick_complete = os.path.join(history_dir, "nmap_quick.xml")
+            intense_complete = os.path.join(history_dir, "nmap_intense.xml")
+            with open(quick_complete, "w") as f:
+                f.write("nmap quick scan completed")
+            with open(intense_complete, "w") as f:
+                f.write("nmap intense scan completed")
+        else:
+            log_info("Nmap completed: No new services found")
 
 
 class DirsearchTool(BaseTool):
@@ -384,20 +512,21 @@ class DirsearchTool(BaseTool):
         else:
             target_alive_path = alive_file
         
+        # Build dirsearch command
+        cmd = [
+            "dirsearch", "-l", target_alive_path,
+            "-x", "600,502,439,404,400",
+            "-R", "5", "--random-agent", "-t", "100", "-F",
+            "-o", os.path.join(history_dir, "dirsearch_raw.txt")
+        ]
+        
         # Get wordlist
         from core.wordlist_manager import WordlistManager
         wordlist_mgr = WordlistManager()
-        wordlist_path = wordlist_mgr.get_wordlist_path(
-            custom_path=getattr(args, 'wordlist', None),
-            size=getattr(args, 'wordlist_size', 'medium'),
-            custom_dir=getattr(args, 'wordlist_dir', None)
+        wordlist_path = wordlist_mgr.get_wordlist(
+            list_type=getattr(args, 'wordlist_size', 'medium'),
+            custom_path=getattr(args, 'wordlist', None)
         )
-        
-        cmd = [
-            "dirsearch", "-l", target_alive_path,
-            "--format=plain", "--full-url",
-            "-o", os.path.join(history_dir, "dirsearch_raw.txt")
-        ]
         
         # Add wordlist
         if wordlist_path:
@@ -411,7 +540,9 @@ class DirsearchTool(BaseTool):
         # Set rate limiting (conservative default for dirsearch)
         cmd.extend(["--threads=20", "--timeout=10", "--retries=1"])
         
-        res = self.execute_command(cmd, timeout=2400)  # 40 minutes
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'dirsearch_rl', None)
+        res = self.execute_command(cmd, timeout=2400, rate_limit=rate_limit)  # 40 minutes
         if not res:
             return
         
@@ -499,7 +630,14 @@ class GauUroTool(BaseTool):
         raw_params_path = os.path.join(history_dir, "params_raw.txt")
         shell_cmd = f"cat {target_alive_path} | gau > {raw_params_path}"
         log_info("Running GAU to collect URLs with parameters")
-        gau_res = run_command(["bash", "-c", shell_cmd], timeout=120, apply_rate_limit=True)
+        # Get rate limit and timeout from args
+        gau_rate_limit = getattr(args, 'gau_rl', None)
+        gau_timeout = getattr(args, 'gau_timeout', 600)  # Default 10 minutes
+        
+        log_info(f"GAU: Using timeout {gau_timeout}s and rate limit {gau_rate_limit} RPS")
+        
+        # Execute GAU with specified timeout
+        gau_res = run_command(["bash", "-c", shell_cmd], timeout=gau_timeout, rate_limit=gau_rate_limit)
         if gau_res.returncode != 0:
             log_warn(f"gau failed with return code {gau_res.returncode}")
             return
@@ -511,7 +649,15 @@ class GauUroTool(BaseTool):
         # Run URO to filter parameters from GAU output
         uro_out = os.path.join(history_dir, "params_filtered.txt")
         log_info("Running URO to filter URLs with parameters")
-        res = run_command(["uro", "-i", raw_params_path, "-o", uro_out], timeout=600, apply_rate_limit=True)
+        
+        # Get URO rate limit
+        uro_rate_limit = getattr(args, 'uro_rl', None)
+        uro_timeout = getattr(args, 'uro_timeout', 600)  # Default 10 minutes
+        
+        log_info(f"URO: Using timeout {uro_timeout}s and rate limit {uro_rate_limit} RPS")
+        
+        # Execute URO with rate limit and timeout
+        res = run_command(["uro", "-i", raw_params_path, "-o", uro_out], timeout=uro_timeout, rate_limit=uro_rate_limit)
         if res.returncode != 0:
             log_warn(f"uro rc={res.returncode}")
             if res.stderr:
@@ -577,8 +723,13 @@ class SecretFinderTool(BaseTool):
             "-o", os.path.join(history_dir, "secrets_raw.txt")
         ]
         
-        res = self.execute_command(cmd, timeout=1200)
-        if not res:
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'nuclei_rl', None)
+        res = self.execute_command(cmd, timeout=1200, rate_limit=rate_limit)
+        if res.returncode != 0:
+            log_warn(f"SecretFinder rc={res.returncode}")
+            if res.stderr:
+                log_warn(res.stderr.strip()[:2000])
             return
         
         if os.path.exists(os.path.join(history_dir, "secrets_raw.txt")):
@@ -617,8 +768,13 @@ class NucleiTool(BaseTool):
         if templates_path and os.path.exists(templates_path):
             cmd.extend(["-t", templates_path])
         
-        res = self.execute_command(cmd, timeout=2400)
-        if not res:
+        # Get rate limit and execute
+        rate_limit = getattr(args, 'nuclei_rl', None)
+        res = self.execute_command(cmd, timeout=2400, rate_limit=rate_limit)
+        if res.returncode != 0:
+            log_warn(f"Nuclei failed with return code {res.returncode}")
+            if res.stderr:
+                log_warn(res.stderr.strip()[:2000])
             return
         
         # Parse nuclei JSON results
