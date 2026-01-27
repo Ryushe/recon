@@ -233,7 +233,8 @@ class HttpxTool(BaseTool):
                         try:
                             data = json.loads(line)
                             if data.get("status_code") and 200 <= data["status_code"] < 600:
-                                alive_urls.append(data["url"])
+                                if data.get("status_code") and 200 <= data["status_code"] < 600:
+                                    alive_urls.append(data["url"])
                         except json.JSONDecodeError:
                             continue
         
@@ -370,7 +371,9 @@ class NmapTool(BaseTool):
             return
         
         hosts_file = os.path.join(history_dir, "hosts_for_nmap.txt")
-        write_lines(hosts_file, hosts)
+        # Remove http:// and https:// prefixes from hosts
+        cleaned_hosts = [host.replace("https://", "").replace("http://", "") for host in hosts]
+        write_lines(hosts_file, cleaned_hosts)
         
         # Define interesting ports for quick scan
         interesting_ports = ['8080', '8443', '8888', '8000', '8081']
@@ -587,14 +590,14 @@ class GauUroTool(BaseTool):
         
         # Check if this is the first run by looking for existing params files
         params_history_dirs = [d for d in os.listdir(os.path.join(project_dir, "history")) 
-                              if os.path.exists(os.path.join(project_dir, "history", d, "params_raw.txt"))]
+                              if os.path.exists(os.path.join(project_dir, "history", d, "params.txt"))]
         
         if params_history_dirs and len(params_history_dirs) > 1:
             today = date.today().isoformat()
             previous_dirs = [d for d in params_history_dirs if d != today]
             if previous_dirs:
                 previous_dir = max(previous_dirs)
-                previous_params = os.path.join(project_dir, "history", previous_dir, "params_raw.txt")
+                previous_params = os.path.join(project_dir, "history", previous_dir, "params.txt")
                 previously_processed_urls = set()
                 
                 if os.path.exists(previous_params):
@@ -627,8 +630,8 @@ class GauUroTool(BaseTool):
             log_info("First param mining run - processing all alive URLs")
         
         # Run gau to collect URLs with parameters directly to output file
-        raw_params_path = os.path.join(history_dir, "params_raw.txt")
-        shell_cmd = f"cat {target_alive_path} | gau > {raw_params_path}"
+        params_path = os.path.join(history_dir, "params.txt")
+        shell_cmd = f"cat {target_alive_path} | gau > {params_path}"
         log_info("Running GAU to collect URLs with parameters")
         # Get rate limit and timeout from args
         gau_rate_limit = getattr(args, 'gau_rl', None)
@@ -642,9 +645,13 @@ class GauUroTool(BaseTool):
             log_warn(f"gau failed with return code {gau_res.returncode}")
             return
         
-        # Read the output file to get count for logging
-        all_urls = read_lines(raw_params_path) if os.path.exists(raw_params_path) else []
+        # Read the output file to get count for logging and process results
+        all_urls = read_lines(params_path) if os.path.exists(params_path) else []
         log_info(f"GAU collected {len(all_urls)} URLs")
+        
+        # Process raw GAU results to create global file in root directory
+        if all_urls:
+            raw_merged = self.process_results(project_dir, history_dir, all_urls, "gau_raw.txt", "new_gau_raw.txt")
         
         # Run URO to filter parameters from GAU output
         uro_out = os.path.join(history_dir, "params_filtered.txt")
@@ -657,7 +664,7 @@ class GauUroTool(BaseTool):
         log_info(f"URO: Using timeout {uro_timeout}s and rate limit {uro_rate_limit} RPS")
         
         # Execute URO with rate limit and timeout
-        res = run_command(["uro", "-i", raw_params_path, "-o", uro_out], timeout=uro_timeout, rate_limit=uro_rate_limit)
+        res = run_command(["uro", "-i", params_path, "-o", uro_out], timeout=uro_timeout, rate_limit=uro_rate_limit)
         if res.returncode != 0:
             log_warn(f"uro rc={res.returncode}")
             if res.stderr:
@@ -699,7 +706,12 @@ class SecretFinderTool(BaseTool):
             log_warn(f"SecretFinder not found at {expanded_path}; skipping secrets stage")
             return
         
-        params_file = os.path.join(project_dir, "params.txt")
+        # Use root params file by default, allow flag to use history params
+        use_root_params = getattr(args, 'use_root_params', False)
+        if use_root_params:
+            params_file = os.path.join(project_dir, "params.txt")
+        else:
+            params_file = os.path.join(history_dir, "params.txt")
         if not os.path.exists(params_file):
             log_warn("No params.txt found; skipping secrets stage")
             return
