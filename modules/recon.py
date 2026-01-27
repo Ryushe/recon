@@ -204,10 +204,11 @@ def resolve_steps(args):
         steps.add("ports_scan")
     if args.dirs:
         steps.add("dirs")
-    if args.params:
-        steps.add("params")
     if args.secrets:
+        steps.add("params")
         steps.add("secrets")
+    elif args.params:
+        steps.add("params")
     if args.nuclei:
         steps.add("nuclei")
     if args.screens:
