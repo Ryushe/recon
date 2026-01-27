@@ -650,8 +650,8 @@ class GauUroTool(BaseTool):
         log_info(f"GAU collected {len(all_urls)} URLs")
         
         # Process raw GAU results to create global file in root directory
-        if all_urls:
-            raw_merged = self.process_results(project_dir, history_dir, all_urls, "gau_raw.txt", "new_gau_raw.txt")
+        # if all_urls:
+        #     raw_merged = self.process_results(project_dir, history_dir, all_urls, "gau_raw.txt", "new_gau_raw.txt")
         
         # Run URO to filter parameters from GAU output
         uro_out = os.path.join(history_dir, "params_filtered.txt")
