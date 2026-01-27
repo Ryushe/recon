@@ -645,9 +645,13 @@ class GauUroTool(BaseTool):
             log_warn(f"gau failed with return code {gau_res.returncode}")
             return
         
-        # Read the output file to get count for logging
+        # Read the output file to get count for logging and process results
         all_urls = read_lines(params_path) if os.path.exists(params_path) else []
         log_info(f"GAU collected {len(all_urls)} URLs")
+        
+        # Process raw GAU results to create global file in root directory
+        if all_urls:
+            raw_merged = self.process_results(project_dir, history_dir, all_urls, "gau_raw.txt", "new_gau_raw.txt")
         
         # Run URO to filter parameters from GAU output
         uro_out = os.path.join(history_dir, "params_filtered.txt")
@@ -702,7 +706,12 @@ class SecretFinderTool(BaseTool):
             log_warn(f"SecretFinder not found at {expanded_path}; skipping secrets stage")
             return
         
-        params_file = os.path.join(project_dir, "params.txt")
+        # Use root params file by default, allow flag to use history params
+        use_root_params = getattr(args, 'use_root_params', False)
+        if use_root_params:
+            params_file = os.path.join(project_dir, "params.txt")
+        else:
+            params_file = os.path.join(history_dir, "params.txt")
         if not os.path.exists(params_file):
             log_warn("No params.txt found; skipping secrets stage")
             return

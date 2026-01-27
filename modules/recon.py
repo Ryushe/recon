@@ -42,6 +42,7 @@ def register_args(parser):
     parser.add_argument("--dirs", action="store_true", help="Run dirsearch")
     parser.add_argument("--params", action="store_true", help="Run gau + uro + js extraction")
     parser.add_argument("--secrets", action="store_true", help="Run SecretFinder on js list")
+    parser.add_argument("--use_root_params", action="store_true", help="Use params.txt from root directory for SecretFinder")
     parser.add_argument("--nuclei", action="store_true", help="Run nuclei on filtered params")
     parser.add_argument("--screens", action="store_true", help="Run Eyewitness to capture screenshots")
     
