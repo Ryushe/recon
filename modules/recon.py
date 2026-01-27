@@ -30,7 +30,8 @@ def get_discord_webhook_url():
 
 
 def register_args(parser):
-    parser.add_argument("--project", required=True, help="Project directory (stateful)")
+    parser.add_argument("-u", "--url", help="Target URL for single-run recon (prints to screen)")
+    parser.add_argument("--project", help="Project directory (stateful)")
     parser.add_argument("--wildcard_list", default="wild.txt", help="Wildcard scope list inside project dir")
     parser.add_argument("--ports", default="443,80,8080,8000,8888", help="Ports for httpx")
     parser.add_argument("--threads", type=int, default=200, help="Threads for httpx/dirsearch where applicable")
@@ -80,7 +81,140 @@ def run_tui(stdscr, config):
     stdscr.refresh()
 
 
+def run_url_mode(args, config):
+    """Run recon in URL mode - processes a single URL and prints results to screen"""
+    from core.tools import HttpxTool, NmapTool, DirsearchTool, GauUroTool, SecretFinderTool, NucleiTool
+    import tempfile
+    import sys
+    
+    # Create temporary directories for processing
+    with tempfile.TemporaryDirectory() as temp_dir:
+        print(f"[*] Running recon on URL: {args.url}")
+        
+        # Create a simple target file with the URL
+        target_file = os.path.join(temp_dir, "target.txt")
+        with open(target_file, 'w') as f:
+            f.write(args.url + '\n')
+        
+        # Configure rate limiting
+        configure_rate_limiter(config)
+        
+        steps = resolve_steps(args)
+        
+        # Map the URL to appropriate files
+        alive_file = target_file  # URL is assumed to be alive
+        
+        print(f"[*] Steps to run: {', '.join(sorted(list(steps)))}")
+        
+        try:
+            if "alive" in steps:
+                print("\n[*] Running alive check...")
+                httpx_tool = HttpxTool()
+                result_file = os.path.join(temp_dir, "alive.txt")
+                httpx_tool.run_single_url(args.url, result_file, args)
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        alive_results = f.read().strip()
+                    if alive_results:
+                        print(f"[+] Alive check result: {alive_results}")
+                        alive_file = result_file
+                    else:
+                        print("[-] URL appears to be down")
+                        return
+            
+            if "dirs" in steps:
+                print("\n[*] Running directory search...")
+                dirsearch_tool = DirsearchTool()
+                result_file = os.path.join(temp_dir, "dirs.txt")
+                dirsearch_tool.run_single_url(args.url, result_file, args)
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        dirs = f.read().strip()
+                    if dirs:
+                        print(f"[+] Directories found:\n{dirs}")
+                    else:
+                        print("[-] No directories found")
+            
+            if "params" in steps:
+                print("\n[*] Running parameter mining...")
+                gau_uro_tool = GauUroTool()
+                result_file = os.path.join(temp_dir, "params.txt")
+                gau_uro_tool.run_single_url(args.url, result_file, args)
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        params = f.read().strip()
+                    if params:
+                        print(f"[+] Parameters found:\n{params}")
+                    else:
+                        print("[-] No parameters found")
+            
+            if "secrets" in steps:
+                print("\n[*] Running secret finding...")
+                secretfinder_tool = SecretFinderTool()
+                result_file = os.path.join(temp_dir, "secrets.txt")
+                # For secrets, we need the params file first
+                params_file = os.path.join(temp_dir, "params.txt")
+                if not os.path.exists(params_file):
+                    # Run params first if not already done
+                    gau_uro_tool = GauUroTool()
+                    gau_uro_tool.run_single_url(args.url, params_file, args)
+                
+                secretfinder_tool.run_single_url(args.url, params_file, result_file, args)
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        secrets = f.read().strip()
+                    if secrets:
+                        print(f"[+] Secrets found:\n{secrets}")
+                    else:
+                        print("[-] No secrets found")
+            
+            if "nuclei" in steps:
+                print("\n[*] Running nuclei scan...")
+                nuclei_tool = NucleiTool()
+                result_file = os.path.join(temp_dir, "nuclei.txt")
+                nuclei_tool.run_single_url(args.url, result_file, args)
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        vulnerabilities = f.read().strip()
+                    if vulnerabilities:
+                        print(f"[+] Vulnerabilities found:\n{vulnerabilities}")
+                    else:
+                        print("[-] No vulnerabilities found")
+            
+            if "ports_scan" in steps:
+                print("\n[*] Running port scan...")
+                nmap_tool = NmapTool()
+                result_file = os.path.join(temp_dir, "ports.txt")
+                nmap_tool.run_single_url(args.url, result_file, args)
+                if os.path.exists(result_file):
+                    with open(result_file, 'r') as f:
+                        ports = f.read().strip()
+                    if ports:
+                        print(f"[+] Port scan results:\n{ports}")
+                    else:
+                        print("[-] No additional ports found")
+            
+            print(f"\n[+] Recon completed for: {args.url}")
+            
+        except Exception as e:
+            print(f"[!] Error during recon: {e}")
+            return
+
+
 def run_cli(args, config):
+    # Validate arguments
+    if not args.url and not args.project:
+        raise ValueError("Either --url or --project must be specified")
+    
+    if args.url and args.project:
+        raise ValueError("Cannot specify both --url and --project at the same time")
+    
+    # Handle URL mode
+    if args.url:
+        run_url_mode(args, config)
+        return
+    
+    # Handle project directory mode (original behavior)
     project_dir = ensure_project(args.project)
     history_dir = today_history_dir(project_dir)
 
