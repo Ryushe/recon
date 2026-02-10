@@ -115,6 +115,16 @@ class SubfinderTool(BaseTool):
         if not os.path.exists(wild_path):
             raise SystemExit(f"Missing wildcard list: {wild_path}")
         
+        # Check if wildcard list is empty
+        wild_targets = read_lines(wild_path)
+        if not wild_targets:
+            log_info("Wildcard list is empty - skipping subdomain enumeration")
+            # Create a marker file to indicate we want to use URLs.txt instead
+            skip_marker = os.path.join(history_dir, "skip_subdomains.txt")
+            with open(skip_marker, "w") as f:
+                f.write("Skipping subdomain enumeration - will use URLs.txt")
+            return
+        
         # Run subfinder with wildcard list
         log_info("Running subfinder with wildcard list")
         cmd = [
@@ -135,7 +145,6 @@ class SubfinderTool(BaseTool):
         
         # Fetch from crt.sh for wildcard targets
         log_info("Fetching from crt.sh")
-        wild_targets = read_lines(wild_path)
         for target_domain in wild_targets:
             crtsh_domains = self.fetch_crtsh_domains(target_domain)
             all_domains.extend(crtsh_domains)
@@ -169,6 +178,17 @@ class HttpxTool(BaseTool):
         alive_path = os.path.join(project_dir, "alive.txt")
         if os.path.exists(alive_path):
             existing_alive = set(read_lines(alive_path))
+        
+        # Check if subdomain enumeration was skipped
+        skip_marker = os.path.join(history_dir, "skip_subdomains.txt")
+        if os.path.exists(skip_marker):
+            log_info("Subdomain enumeration was skipped - checking for URLs.txt")
+            urls_file = os.path.join(project_dir, "urls.txt")
+            if os.path.exists(urls_file):
+                return read_lines(urls_file)
+            else:
+                log_warn("URLs.txt not found - no targets to check")
+                return []
         
         # Get subs from today and merge into canonical
         today_subs = os.path.join(history_dir, "subdomains.txt")
